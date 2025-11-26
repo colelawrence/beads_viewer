@@ -1,31 +1,46 @@
 # Beads Viewer (bv)
 
-A polished, high-performance TUI for managing and exploring [Beads](https://github.com/steveyegge/beads) issue trackers.
+**Project Intelligence for Beads.**
+
+`bv` is a slick, polished Terminal User Interface (TUI) for the [Beads](https://github.com/steveyegge/beads) issue tracker. It transforms your flat list of issues into a visual, interactive workspace with advanced graph theory analytics and insights.
 
 ## Features
 
-### 🧠 Advanced Analytics & Insights
-*   **Project Health Dashboard**: Press `i` to view high-level insights.
-*   **Bottleneck Detection**: Identifies tasks blocking critical paths via Betweenness Centrality.
-*   **Impact Analysis**: Scores tasks based on downstream dependencies.
-*   **Cycle Alert**: Detects and lists circular dependencies.
+### 🖥️ Visual Workspace
+*   **Adaptive Split-View Dashboard**: On wide screens (>100 cols), `bv` automatically transitions to a master-detail view, putting your issue list side-by-side with rich context.
+*   **Kanban Board**: Toggle a 4-column Kanban board (Open, In Progress, Blocked, Closed) with `b` to visualize flow.
+*   **Ultra-Wide Density**: On large monitors (>140 cols), lists expand to show label tags, comment counts, and relative ages.
+*   **Visual Polish**: A vibrant "Dracula" theme with emoji status icons (🐛, ✨, 🏔️) and priority badges (🔥, ⚡).
 
-### 🖥️ Visual Dashboard
-*   **Kanban Board**: Press `b` to toggle a 4-column Kanban board.
-*   **Sparklines**: Visual bars for Impact scores in Ultra-Wide mode.
-*   **Adaptive Layouts**: Responsive design for all terminal sizes.
+### 🧠 Deep Analytics
+*   **Graph Theory Engine**: `bv` builds a Directed Acyclic Graph (DAG) of your project's dependencies to uncover structural insights.
+*   **Impact Scores**: Automatically identifies "Keystone" tasks—those blocking the deepest chains of downstream work—and visualizes them with Sparklines (`███▌`) and Heatmaps (🌋/🏔️) in Ultra-Wide mode.
+*   **Insights Dashboard**: Press `i` to open a dedicated panel showing:
+    *   **Bottlenecks**: Tasks with high Betweenness Centrality.
+    *   **Keystones**: High-impact tasks critical to the critical path.
+    *   **Network Health**: Cycle detection and cluster density metrics.
 
-### ⚡ Workflow
-*   **Instant Filtering**: `o` (Open), `r` (Ready), `c` (Closed), `a` (All).
-*   **Mermaid Export**: `bv --export-md report.md`.
+### ⚡ Workflow & Integration
+*   **Instant Filtering**: Filter by status with single keystrokes: `o` (Open), `r` (Ready/Unblocked), `c` (Closed), `a` (All).
+*   **Markdown Export**: Generate comprehensive status reports with `bv --export-md report.md`. Includes embedded **Mermaid.js** dependency graphs that render visually on GitHub/GitLab.
+*   **Smart Search**: Fuzzy search across Titles, IDs, Assignees, and Labels.
+*   **Self-Updating**: Automatically checks for and notifies you of new releases.
 
 ## Installation
 
+### Quick Install
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh | bash
 ```
 
+### Build from Source
+```bash
+go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest
+```
+
 ## Usage
+
+Navigate to any project initialized with `bd init` and run:
 
 ```bash
 bv
@@ -37,15 +52,16 @@ bv
 | :--- | :--- | :--- |
 | `b` | Global | Toggle **Kanban Board** |
 | `i` | Global | Toggle **Insights Dashboard** |
-| `Tab` | Split View | Switch focus |
-| `h`/`j`/`k`/`l`| Board | Navigate |
-| `o` / `r` / `c` | Global | Filter status |
+| `Tab` | Split View | Switch focus between List and Details |
+| `h`/`j`/`k`/`l`| Global | Navigate (Vim style) |
+| `Enter` | List | Open/Focus details |
+| `o` / `r` / `c` | Global | Filter by Status |
+| `/` | List | Start Search |
 | `q` | Global | Quit |
 
 ## CI/CD
 
-*   **CI**: Runs tests on every push.
-*   **Release**: Builds binaries for all platforms.
+This project uses GitHub Actions to run full unit and end-to-end tests on every push and automatically builds optimized binaries for Linux, macOS, and Windows on every release tag.
 
 ## License
 
