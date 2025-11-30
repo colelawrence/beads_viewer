@@ -191,7 +191,8 @@ func TestRevisionCacheExpires(t *testing.T) {
 	repoDir, cleanup := setupTestGitRepo(t)
 	defer cleanup()
 
-	loader := NewGitLoaderWithCacheTTL(repoDir, 5*time.Millisecond)
+	// Use a generous TTL/sleep gap to avoid timing flake on slow clocks.
+	loader := NewGitLoaderWithCacheTTL(repoDir, 50*time.Millisecond)
 
 	// First load populates cache
 	if _, err := loader.LoadAt("HEAD"); err != nil {
@@ -201,8 +202,8 @@ func TestRevisionCacheExpires(t *testing.T) {
 		t.Fatalf("expected 1 valid cache entry, got %d", stats.ValidEntries)
 	}
 
-	// Wait for entry to expire
-	time.Sleep(10 * time.Millisecond)
+	// Wait long enough for entry to expire
+	time.Sleep(120 * time.Millisecond)
 
 	// Cache should report zero valid entries, and LoadAt should still succeed (re-fetch)
 	if stats := loader.CacheStats(); stats.ValidEntries != 0 {
