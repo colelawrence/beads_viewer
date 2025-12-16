@@ -132,6 +132,7 @@ func main() {
 	exportPages := flag.String("export-pages", "", "Export static site to directory (e.g., ./bv-pages)")
 	pagesTitle := flag.String("pages-title", "", "Custom title for static site")
 	pagesIncludeClosed := flag.Bool("pages-include-closed", false, "Include closed issues in export")
+	pagesIncludeHistory := flag.Bool("pages-include-history", false, "Include git history for time-travel animation (bv-z38b)")
 	previewPages := flag.String("preview-pages", "", "Preview existing static site bundle")
 	pagesWizard := flag.Bool("pages", false, "Launch interactive Pages deployment wizard")
 	flag.Parse()
@@ -140,6 +141,7 @@ func main() {
 	_ = exportPages
 	_ = pagesTitle
 	_ = pagesIncludeClosed
+	_ = pagesIncludeHistory
 	_ = previewPages
 	_ = pagesWizard
 	_ = robotForecast
@@ -1064,6 +1066,23 @@ func main() {
 		if err := copyViewerAssets(*exportPages, *pagesTitle); err != nil {
 			fmt.Fprintf(os.Stderr, "Error copying assets: %v\n", err)
 			os.Exit(1)
+		}
+
+		// Export history data for time-travel feature (bv-z38b)
+		if *pagesIncludeHistory {
+			fmt.Println("  → Generating time-travel history data...")
+			if historyReport, err := generateHistoryForExport(issues); err == nil && historyReport != nil {
+				historyPath := filepath.Join(*exportPages, "data", "history.json")
+				if historyJSON, err := json.MarshalIndent(historyReport, "", "  "); err == nil {
+					if err := os.WriteFile(historyPath, historyJSON, 0644); err != nil {
+						fmt.Printf("  → Warning: failed to write history.json: %v\n", err)
+					} else {
+						fmt.Printf("  → history.json (%d commits)\n", len(historyReport.Commits))
+					}
+				}
+			} else if err != nil {
+				fmt.Printf("  → Warning: failed to generate history: %v\n", err)
+			}
 		}
 
 		// Run post-export hooks (bv-qjc.3)
@@ -4358,4 +4377,116 @@ jq -s '.[0].quick_ref.top_picks[0].id as $id | .[1].top_pagerank[$id] // 0' tria
 jq -r '.recommendations[] | [.id, .score, .action] | @csv' triage.json
 ` + "```" + `
 `
+}
+
+// TimeTravelHistory represents the history data format for time-travel animation (bv-z38b)
+type TimeTravelHistory struct {
+	GeneratedAt string             `json:"generated_at"`
+	Commits     []TimeTravelCommit `json:"commits"`
+}
+
+// TimeTravelCommit represents a single commit in the time-travel history
+type TimeTravelCommit struct {
+	SHA         string   `json:"sha"`
+	Date        string   `json:"date"`
+	Message     string   `json:"message,omitempty"`
+	BeadsAdded  []string `json:"beads_added,omitempty"`
+	BeadsClosed []string `json:"beads_closed,omitempty"`
+}
+
+// generateHistoryForExport creates time-travel history data from git history
+func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if we're in a git repository
+	if err := correlation.ValidateRepository(cwd); err != nil {
+		return nil, err
+	}
+
+	// Get beads path
+	beadsDir, err := loader.GetBeadsDir("")
+	if err != nil {
+		return nil, err
+	}
+	beadsPath, err := loader.FindJSONLPath(beadsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build bead info from issues
+	beadInfos := make([]correlation.BeadInfo, len(issues))
+	for i, issue := range issues {
+		beadInfos[i] = correlation.BeadInfo{
+			ID:     issue.ID,
+			Title:  issue.Title,
+			Status: string(issue.Status),
+		}
+	}
+
+	// Generate correlation report
+	correlator := correlation.NewCorrelator(cwd, beadsPath)
+	report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+		Limit: 500, // Reasonable limit for time-travel
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to time-travel format
+	// Group by commit date and track bead changes
+	commitMap := make(map[string]*TimeTravelCommit)
+
+	for beadID, history := range report.Histories {
+		for _, commit := range history.Commits {
+			ttCommit, exists := commitMap[commit.SHA]
+			if !exists {
+				ttCommit = &TimeTravelCommit{
+					SHA:     commit.SHA,
+					Date:    commit.Timestamp.Format(time.RFC3339),
+					Message: commit.Message,
+				}
+				commitMap[commit.SHA] = ttCommit
+			}
+
+			// Determine if this bead was added or modified in this commit
+			// For simplicity, we consider any commit touching a bead as "adding" it
+			// (the first time it appears in history)
+			ttCommit.BeadsAdded = append(ttCommit.BeadsAdded, beadID)
+		}
+	}
+
+	// Check for closed beads (status = closed)
+	issueStatusMap := make(map[string]bool)
+	for _, issue := range issues {
+		issueStatusMap[issue.ID] = issue.Status == model.StatusClosed
+	}
+
+	// Convert map to sorted slice
+	var commits []TimeTravelCommit
+	for _, commit := range commitMap {
+		// Deduplicate beads_added
+		seen := make(map[string]bool)
+		var dedupedAdded []string
+		for _, id := range commit.BeadsAdded {
+			if !seen[id] {
+				seen[id] = true
+				dedupedAdded = append(dedupedAdded, id)
+			}
+		}
+		commit.BeadsAdded = dedupedAdded
+		commits = append(commits, *commit)
+	}
+
+	// Sort commits by date
+	sort.Slice(commits, func(i, j int) bool {
+		return commits[i].Date < commits[j].Date
+	})
+
+	return &TimeTravelHistory{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Commits:     commits,
+	}, nil
 }

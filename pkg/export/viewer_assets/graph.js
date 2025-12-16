@@ -2255,6 +2255,23 @@ function setupKeyboardShortcuts() {
             case '?':
                 dispatchEvent('helpRequest');
                 break;
+            case 't':
+                // Toggle time-travel mode (bv-z38b)
+                if (timeTravelState.history) {
+                    if (timeTravelState.active) {
+                        stopTimeTravel();
+                    } else {
+                        startTimeTravel();
+                    }
+                }
+                break;
+            case ' ':
+                // Space to play/pause time-travel
+                if (timeTravelState.active) {
+                    e.preventDefault();
+                    togglePlay();
+                }
+                break;
         }
     });
 }
@@ -2630,3 +2647,500 @@ export {
 
 // Export constants
 export { THEME, VIEW_MODES, TYPE_ICONS, LABEL_COLORS, LAYOUT_PRESETS };
+
+// ============================================================================
+// TIME-TRAVEL ANIMATION (bv-z38b)
+// ============================================================================
+
+/**
+ * Time-travel state for graph history animation
+ */
+const timeTravelState = {
+    active: false,
+    playing: false,
+    currentIdx: 0,
+    history: null,        // { commits: [{sha, date, beads_added[], beads_closed[], ...}] }
+    speed: 1,
+    animationFrame: null,
+    lastFrameTime: 0,
+    originalNodes: [],    // Snapshot of nodes before time-travel
+    originalLinks: [],    // Snapshot of links before time-travel
+    nodeStates: new Map(), // node.id -> { visible, opacity, animation }
+    controlsEl: null,
+};
+
+/**
+ * Initialize time-travel with history data
+ * @param {Object} history - History data from --robot-history
+ */
+export function initTimeTravel(history) {
+    if (!history || !history.commits || history.commits.length === 0) {
+        console.warn('[TimeTravel] No history data provided');
+        return false;
+    }
+
+    // Sort commits by date
+    history.commits.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    timeTravelState.history = history;
+    timeTravelState.currentIdx = 0;
+    timeTravelState.active = false;
+    timeTravelState.playing = false;
+
+    // Create timeline controls
+    createTimelineControls();
+
+    console.log(`[TimeTravel] Initialized with ${history.commits.length} commits`);
+    dispatchEvent('timeTravelReady', { commits: history.commits.length });
+
+    return true;
+}
+
+/**
+ * Create timeline controls UI
+ */
+function createTimelineControls() {
+    // Remove existing controls if any
+    if (timeTravelState.controlsEl) {
+        timeTravelState.controlsEl.remove();
+    }
+
+    const controls = document.createElement('div');
+    controls.id = 'time-travel-controls';
+    controls.className = 'time-travel-controls';
+    controls.innerHTML = `
+        <div class="timeline-header">
+            <span class="timeline-icon">⏱️</span>
+            <span class="timeline-title">Time Travel</span>
+            <button class="timeline-close" title="Close">✕</button>
+        </div>
+        <div class="timeline-content">
+            <div class="timeline-buttons">
+                <button class="timeline-btn" id="tt-start" title="Go to start">⏮</button>
+                <button class="timeline-btn" id="tt-back" title="Previous commit">⏪</button>
+                <button class="timeline-btn timeline-btn-primary" id="tt-play" title="Play/Pause">▶️</button>
+                <button class="timeline-btn" id="tt-forward" title="Next commit">⏩</button>
+                <button class="timeline-btn" id="tt-end" title="Go to end">⏭</button>
+            </div>
+            <div class="timeline-scrubber">
+                <input type="range" id="tt-slider" min="0" max="100" value="0">
+            </div>
+            <div class="timeline-info">
+                <span id="tt-date">--</span>
+                <span id="tt-position">0 / 0</span>
+            </div>
+            <div class="timeline-speed">
+                <label>Speed:</label>
+                <select id="tt-speed">
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="2">2x</option>
+                    <option value="5">5x</option>
+                    <option value="10">10x</option>
+                </select>
+            </div>
+        </div>
+    `;
+
+    // Add styles
+    const style = document.createElement('style');
+    style.textContent = `
+        .time-travel-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: ${THEME.bgSecondary};
+            border: 1px solid ${THEME.fgMuted};
+            border-radius: 8px;
+            padding: 8px 12px;
+            z-index: 1000;
+            min-width: 300px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            display: none;
+        }
+        .time-travel-controls.active {
+            display: block;
+        }
+        .timeline-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid ${THEME.fgMuted};
+        }
+        .timeline-title {
+            flex: 1;
+            font-weight: 600;
+            color: ${THEME.fg};
+        }
+        .timeline-close {
+            background: none;
+            border: none;
+            color: ${THEME.fgMuted};
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .timeline-close:hover {
+            color: ${THEME.accent.red};
+        }
+        .timeline-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 4px;
+            margin-bottom: 8px;
+        }
+        .timeline-btn {
+            background: ${THEME.bgTertiary};
+            border: 1px solid ${THEME.fgMuted};
+            color: ${THEME.fg};
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .timeline-btn:hover {
+            background: ${THEME.accent.purple};
+        }
+        .timeline-btn-primary {
+            background: ${THEME.accent.purple};
+        }
+        .timeline-scrubber {
+            margin-bottom: 8px;
+        }
+        .timeline-scrubber input[type="range"] {
+            width: 100%;
+            accent-color: ${THEME.accent.purple};
+        }
+        .timeline-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: ${THEME.fgMuted};
+            margin-bottom: 8px;
+        }
+        .timeline-speed {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+        .timeline-speed label {
+            color: ${THEME.fgMuted};
+        }
+        .timeline-speed select {
+            background: ${THEME.bgTertiary};
+            border: 1px solid ${THEME.fgMuted};
+            color: ${THEME.fg};
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+
+        /* Node animations */
+        @keyframes nodeAppear {
+            from { transform: scale(0); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        @keyframes nodeDisappear {
+            from { transform: scale(1); opacity: 1; }
+            to { transform: scale(0); opacity: 0; }
+        }
+    `;
+    document.head.appendChild(style);
+
+    // Append controls to graph container
+    if (store.container) {
+        store.container.appendChild(controls);
+    }
+
+    timeTravelState.controlsEl = controls;
+
+    // Setup event listeners
+    setupTimeTravelListeners();
+}
+
+/**
+ * Setup event listeners for timeline controls
+ */
+function setupTimeTravelListeners() {
+    const controls = timeTravelState.controlsEl;
+    if (!controls) return;
+
+    controls.querySelector('.timeline-close').addEventListener('click', stopTimeTravel);
+    controls.querySelector('#tt-start').addEventListener('click', () => goToCommit(0));
+    controls.querySelector('#tt-back').addEventListener('click', () => stepCommit(-1));
+    controls.querySelector('#tt-play').addEventListener('click', togglePlay);
+    controls.querySelector('#tt-forward').addEventListener('click', () => stepCommit(1));
+    controls.querySelector('#tt-end').addEventListener('click', () => {
+        if (timeTravelState.history) {
+            goToCommit(timeTravelState.history.commits.length - 1);
+        }
+    });
+
+    controls.querySelector('#tt-slider').addEventListener('input', (e) => {
+        if (timeTravelState.history) {
+            const idx = Math.round((e.target.value / 100) * (timeTravelState.history.commits.length - 1));
+            goToCommit(idx);
+        }
+    });
+
+    controls.querySelector('#tt-speed').addEventListener('change', (e) => {
+        timeTravelState.speed = parseFloat(e.target.value);
+    });
+}
+
+/**
+ * Start time-travel mode
+ */
+export function startTimeTravel() {
+    if (!timeTravelState.history) {
+        console.warn('[TimeTravel] No history loaded');
+        return;
+    }
+
+    // Save original state
+    const graphData = store.graph?.graphData() || { nodes: [], links: [] };
+    timeTravelState.originalNodes = [...graphData.nodes];
+    timeTravelState.originalLinks = [...graphData.links];
+    timeTravelState.nodeStates.clear();
+
+    // Initialize all nodes as hidden
+    graphData.nodes.forEach(node => {
+        timeTravelState.nodeStates.set(node.id, {
+            visible: false,
+            opacity: 0,
+            animation: null
+        });
+    });
+
+    timeTravelState.active = true;
+    timeTravelState.currentIdx = 0;
+
+    // Show controls
+    if (timeTravelState.controlsEl) {
+        timeTravelState.controlsEl.classList.add('active');
+    }
+
+    // Go to start
+    goToCommit(0);
+
+    dispatchEvent('timeTravelStart', {});
+}
+
+/**
+ * Stop time-travel mode and restore original state
+ */
+export function stopTimeTravel() {
+    if (!timeTravelState.active) return;
+
+    // Stop playing
+    if (timeTravelState.playing) {
+        togglePlay();
+    }
+
+    // Restore original nodes
+    if (store.graph && timeTravelState.originalNodes.length > 0) {
+        store.graph.graphData({
+            nodes: timeTravelState.originalNodes,
+            links: timeTravelState.originalLinks
+        });
+    }
+
+    timeTravelState.active = false;
+    timeTravelState.nodeStates.clear();
+
+    // Hide controls
+    if (timeTravelState.controlsEl) {
+        timeTravelState.controlsEl.classList.remove('active');
+    }
+
+    dispatchEvent('timeTravelStop', {});
+}
+
+/**
+ * Go to a specific commit index
+ * @param {number} idx - Commit index
+ */
+function goToCommit(idx) {
+    if (!timeTravelState.history || !timeTravelState.active) return;
+
+    const commits = timeTravelState.history.commits;
+    idx = Math.max(0, Math.min(idx, commits.length - 1));
+    timeTravelState.currentIdx = idx;
+
+    // Calculate which nodes should be visible at this point
+    const visibleNodes = new Set();
+    const visibleLinks = new Set();
+
+    // Walk through history up to current index
+    for (let i = 0; i <= idx; i++) {
+        const commit = commits[i];
+
+        // Add nodes from this commit
+        if (commit.beads_added) {
+            commit.beads_added.forEach(id => visibleNodes.add(id));
+        }
+
+        // Remove closed nodes
+        if (commit.beads_closed) {
+            commit.beads_closed.forEach(id => visibleNodes.delete(id));
+        }
+    }
+
+    // Update node visibility with animation
+    const currentCommit = commits[idx];
+    timeTravelState.nodeStates.forEach((state, nodeId) => {
+        const shouldBeVisible = visibleNodes.has(nodeId);
+        const wasJustAdded = currentCommit.beads_added?.includes(nodeId);
+        const wasJustClosed = currentCommit.beads_closed?.includes(nodeId);
+
+        state.visible = shouldBeVisible;
+        state.opacity = shouldBeVisible ? 1 : 0;
+        state.animation = wasJustAdded ? 'appear' : (wasJustClosed ? 'disappear' : null);
+    });
+
+    // Build visible links (both endpoints must be visible)
+    const visibleLinksArr = timeTravelState.originalLinks.filter(link => {
+        const sourceId = typeof link.source === 'object' ? link.source.id : link.source;
+        const targetId = typeof link.target === 'object' ? link.target.id : link.target;
+        return visibleNodes.has(sourceId) && visibleNodes.has(targetId);
+    });
+
+    // Update graph
+    const visibleNodesArr = timeTravelState.originalNodes.filter(n => visibleNodes.has(n.id));
+    if (store.graph) {
+        store.graph.graphData({
+            nodes: visibleNodesArr,
+            links: visibleLinksArr
+        });
+    }
+
+    // Update UI
+    updateTimeTravelUI();
+
+    dispatchEvent('timeTravelCommit', {
+        idx,
+        commit: currentCommit,
+        visibleNodes: visibleNodes.size
+    });
+}
+
+/**
+ * Step forward or backward by one commit
+ * @param {number} delta - Direction (+1 or -1)
+ */
+function stepCommit(delta) {
+    if (!timeTravelState.history) return;
+    goToCommit(timeTravelState.currentIdx + delta);
+}
+
+/**
+ * Toggle play/pause
+ */
+function togglePlay() {
+    if (!timeTravelState.history || !timeTravelState.active) return;
+
+    timeTravelState.playing = !timeTravelState.playing;
+
+    // Update play button
+    const playBtn = timeTravelState.controlsEl?.querySelector('#tt-play');
+    if (playBtn) {
+        playBtn.textContent = timeTravelState.playing ? '⏸️' : '▶️';
+    }
+
+    if (timeTravelState.playing) {
+        timeTravelState.lastFrameTime = Date.now();
+        playAnimation();
+    }
+
+    dispatchEvent('timeTravelPlayState', { playing: timeTravelState.playing });
+}
+
+/**
+ * Animation loop for playback
+ */
+function playAnimation() {
+    if (!timeTravelState.playing) return;
+
+    const now = Date.now();
+    const delta = now - timeTravelState.lastFrameTime;
+    const interval = 1000 / timeTravelState.speed; // ms per frame
+
+    if (delta >= interval) {
+        timeTravelState.lastFrameTime = now;
+
+        if (timeTravelState.currentIdx < timeTravelState.history.commits.length - 1) {
+            stepCommit(1);
+        } else {
+            // Reached end, stop playing
+            togglePlay();
+            return;
+        }
+    }
+
+    timeTravelState.animationFrame = requestAnimationFrame(playAnimation);
+}
+
+/**
+ * Update timeline UI elements
+ */
+function updateTimeTravelUI() {
+    if (!timeTravelState.controlsEl || !timeTravelState.history) return;
+
+    const commits = timeTravelState.history.commits;
+    const idx = timeTravelState.currentIdx;
+    const commit = commits[idx];
+
+    // Update slider
+    const slider = timeTravelState.controlsEl.querySelector('#tt-slider');
+    if (slider) {
+        slider.value = (idx / (commits.length - 1)) * 100;
+    }
+
+    // Update date
+    const dateEl = timeTravelState.controlsEl.querySelector('#tt-date');
+    if (dateEl && commit) {
+        const date = new Date(commit.date);
+        dateEl.textContent = date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric'
+        });
+    }
+
+    // Update position
+    const posEl = timeTravelState.controlsEl.querySelector('#tt-position');
+    if (posEl) {
+        posEl.textContent = `${idx + 1} / ${commits.length}`;
+    }
+}
+
+/**
+ * Check if time-travel is active
+ */
+export function isTimeTravelActive() {
+    return timeTravelState.active;
+}
+
+/**
+ * Get time-travel state for external access
+ */
+export function getTimeTravelState() {
+    return {
+        active: timeTravelState.active,
+        playing: timeTravelState.playing,
+        currentIdx: timeTravelState.currentIdx,
+        totalCommits: timeTravelState.history?.commits?.length || 0,
+        speed: timeTravelState.speed
+    };
+}
+
+// Export time-travel functions (bv-z38b)
+export {
+    initTimeTravel,
+    startTimeTravel,
+    stopTimeTravel,
+    isTimeTravelActive,
+    getTimeTravelState
+};

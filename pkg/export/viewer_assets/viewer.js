@@ -877,15 +877,15 @@ function buildFilterClauses(filters = {}) {
     }
   }
 
-  // Priority filter (supports array for multi-select)
-  if (filters.priority?.length) {
-    const priorities = (Array.isArray(filters.priority) ? filters.priority : [filters.priority])
-      .map(p => parseInt(p))
-      .filter(p => !isNaN(p));
-    if (priorities.length === 1) {
-      clauses.push(`priority = ?`);
-      params.push(priorities[0]);
-    } else if (priorities.length > 1) {
+	  // Priority filter (supports array for multi-select)
+	  if (filters.priority?.length) {
+	    const priorities = (Array.isArray(filters.priority) ? filters.priority : [filters.priority])
+	      .map(p => parseInt(p, 10))
+	      .filter(p => !isNaN(p));
+	    if (priorities.length === 1) {
+	      clauses.push(`priority = ?`);
+	      params.push(priorities[0]);
+	    } else if (priorities.length > 1) {
       clauses.push(`priority IN (${priorities.map(() => '?').join(',')})`);
       params.push(...priorities);
     }
@@ -897,12 +897,12 @@ function buildFilterClauses(filters = {}) {
     params.push(filters.assignee);
   }
 
-  // Blocked filter
-  if (filters.hasBlockers === true || filters.hasBlockers === 'true') {
-    clauses.push(`(blocked_by_ids IS NOT NULL AND blocked_by_ids != '')`);
-  } else if (filters.hasBlockers === false || filters.hasBlockers === 'false') {
-    clauses.push(`(blocked_by_ids IS NULL OR blocked_by_ids = '')`);
-  }
+	  // Blocked filter
+	  if (filters.hasBlockers === true || filters.hasBlockers === 'true') {
+	    clauses.push(`(blocked_by_ids IS NOT NULL AND blocked_by_ids <> '')`);
+	  } else if (filters.hasBlockers === false || filters.hasBlockers === 'false') {
+	    clauses.push(`(blocked_by_ids IS NULL OR blocked_by_ids = '')`);
+	  }
 
   // Blocking filter (has items depending on it)
   if (filters.isBlocking === true || filters.isBlocking === 'true') {
@@ -972,26 +972,26 @@ function countIssues(filters = {}) {
 /**
  * Get unique values for filter dropdowns
  */
-function getFilterOptions() {
-  return {
-    statuses: execQuery(`SELECT DISTINCT status FROM issue_overview_mv ORDER BY status`).map(r => r.status),
-    types: execQuery(`SELECT DISTINCT issue_type FROM issue_overview_mv ORDER BY issue_type`).map(r => r.issue_type),
-    priorities: execQuery(`SELECT DISTINCT priority FROM issue_overview_mv ORDER BY priority`).map(r => r.priority),
-    assignees: execQuery(`SELECT DISTINCT assignee FROM issue_overview_mv WHERE assignee IS NOT NULL AND assignee != '' ORDER BY assignee`).map(r => r.assignee),
-    labels: getUniqueLabels(),
-  };
-}
+	function getFilterOptions() {
+	  return {
+	    statuses: execQuery(`SELECT DISTINCT status FROM issue_overview_mv ORDER BY status`).map(r => r.status),
+	    types: execQuery(`SELECT DISTINCT issue_type FROM issue_overview_mv ORDER BY issue_type`).map(r => r.issue_type),
+	    priorities: execQuery(`SELECT DISTINCT priority FROM issue_overview_mv ORDER BY priority`).map(r => r.priority),
+	    assignees: execQuery(`SELECT DISTINCT assignee FROM issue_overview_mv WHERE assignee IS NOT NULL AND assignee <> '' ORDER BY assignee`).map(r => r.assignee),
+	    labels: getUniqueLabels(),
+	  };
+	}
 
 /**
  * Get unique labels from all issues
  */
-function getUniqueLabels() {
-  const results = execQuery(`SELECT labels FROM issue_overview_mv WHERE labels IS NOT NULL AND labels != ''`);
-  const labelSet = new Set();
-  for (const row of results) {
-    try {
-      const labels = JSON.parse(row.labels);
-      if (Array.isArray(labels)) {
+	function getUniqueLabels() {
+	  const results = execQuery(`SELECT labels FROM issue_overview_mv WHERE labels IS NOT NULL AND labels <> ''`);
+	  const labelSet = new Set();
+	  for (const row of results) {
+	    try {
+	      const labels = JSON.parse(row.labels);
+	      if (Array.isArray(labels)) {
         labels.forEach(l => labelSet.add(l));
       }
     } catch { /* ignore parse errors */ }
@@ -1086,12 +1086,12 @@ function getStats() {
   });
 
   // Count blocked (has blocked_by_ids and status is open/in_progress)
-  stats.blocked = execScalar(`
-    SELECT COUNT(*) FROM issue_overview_mv
-    WHERE blocked_by_ids IS NOT NULL
-    AND blocked_by_ids != ''
-    AND status IN ('open', 'in_progress')
-  `) || 0;
+	  stats.blocked = execScalar(`
+	    SELECT COUNT(*) FROM issue_overview_mv
+	    WHERE blocked_by_ids IS NOT NULL
+	    AND blocked_by_ids <> ''
+	    AND status IN ('open', 'in_progress')
+	  `) || 0;
 
   // Count actionable (open/in_progress with NO open blockers)
   stats.actionable = execScalar(`
@@ -1136,27 +1136,27 @@ function getBlockersToClose(limit = 5) {
  * Get distribution by type
  */
 function getDistributionByType() {
-  return execQuery(`
-    SELECT issue_type as type, COUNT(*) as count
-    FROM issue_overview_mv
-    WHERE status != 'closed'
-    GROUP BY issue_type
-    ORDER BY count DESC
-  `);
-}
+	  return execQuery(`
+	    SELECT issue_type as type, COUNT(*) as count
+	    FROM issue_overview_mv
+	    WHERE status <> 'closed'
+	    GROUP BY issue_type
+	    ORDER BY count DESC
+	  `);
+	}
 
 /**
  * Get distribution by priority
  */
 function getDistributionByPriority() {
-  return execQuery(`
-    SELECT priority, COUNT(*) as count
-    FROM issue_overview_mv
-    WHERE status != 'closed'
-    GROUP BY priority
-    ORDER BY priority ASC
-  `);
-}
+	  return execQuery(`
+	    SELECT priority, COUNT(*) as count
+	    FROM issue_overview_mv
+	    WHERE status <> 'closed'
+	    GROUP BY priority
+	    ORDER BY priority ASC
+	  `);
+	}
 
 /**
  * Get top issues by triage score
@@ -1874,9 +1874,18 @@ function beadsApp() {
       // Force-graph integration: clicking a node opens the issue modal without changing routes.
       document.addEventListener('bv-graph:nodeClick', (e) => {
         const nodeId = e?.detail?.node?.id;
-        if (nodeId) {
-          this.selectIssue(nodeId);
-        }
+        const ev = e?.detail?.event;
+        if (!nodeId) return;
+
+        // Let graph interactions work:
+        // - Shift+click triggers what-if
+        // - Ctrl/Meta+click highlights dependency paths
+        if (ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey)) return;
+
+        // Open the issue modal on double-click.
+        if (ev && typeof ev.detail === 'number' && ev.detail < 2) return;
+
+        this.selectIssue(nodeId);
       });
 
       try {
@@ -2053,6 +2062,21 @@ function beadsApp() {
 
         const { issues, dependencies } = getGraphViewData();
         this.forceGraphModule.loadData(issues, dependencies);
+
+        // Try to load history data for time-travel feature (bv-z38b)
+        try {
+          const historyResp = await fetch('./data/history.json');
+          if (historyResp.ok) {
+            const historyData = await historyResp.json();
+            if (this.forceGraphModule.initTimeTravel) {
+              this.forceGraphModule.initTimeTravel(historyData);
+              console.log('[Viewer] Time-travel history loaded');
+            }
+          }
+        } catch (histErr) {
+          // history.json is optional, silently ignore if not found
+          console.log('[Viewer] No history.json found (optional for time-travel)');
+        }
 
         // Match canvas size to container for crisp rendering.
         const container = document.getElementById('graph-container');
