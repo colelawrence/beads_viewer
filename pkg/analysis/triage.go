@@ -989,7 +989,7 @@ func GenerateTriageReasons(ctx TriageReasonContext) TriageReasons {
 	primary := ""
 	actionHint := "Start work on this issue"
 	if ctx.Issue != nil && ctx.Issue.Status == model.StatusInProgress {
-		actionHint = "work"
+		actionHint = "Start work on this issue"
 	}
 
 	// 1. Unblock cascade (highest priority - most actionable)
@@ -1038,13 +1038,13 @@ func GenerateTriageReasons(ctx TriageReasonContext) TriageReasons {
 		reason := fmt.Sprintf("🕐 No activity in %d days - may need review", ctx.DaysSinceUpdate)
 		reasons = append(reasons, reason)
 		if ctx.Issue != nil && ctx.Issue.Status == model.StatusInProgress {
-			actionHint = "review"
+			actionHint = "Check if this is stuck and needs help"
 		}
 	} else if ctx.DaysSinceUpdate > 7 {
 		reason := fmt.Sprintf("📅 Last updated %d days ago", ctx.DaysSinceUpdate)
 		reasons = append(reasons, reason)
 		if ctx.Issue != nil && ctx.Issue.Status == model.StatusInProgress {
-			actionHint = "review"
+			actionHint = "Start work on this issue"
 		}
 	}
 
