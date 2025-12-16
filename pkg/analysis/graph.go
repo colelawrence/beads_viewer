@@ -76,6 +76,9 @@ type GraphStats struct {
 	hubs              map[string]float64
 	authorities       map[string]float64
 	criticalPathScore map[string]float64
+	coreNumber        map[string]int
+	articulation      map[string]bool
+	slack             map[string]float64
 	cycles            [][]string
 
 	// Phase 2 status flags for robot visibility
@@ -289,6 +292,51 @@ func (s *GraphStats) CriticalPathScore() map[string]float64 {
 	}
 	cp := make(map[string]float64, len(s.criticalPathScore))
 	for k, v := range s.criticalPathScore {
+		cp[k] = v
+	}
+	return cp
+}
+
+// CoreNumber returns k-core numbers per node (undirected view).
+func (s *GraphStats) CoreNumber() map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.coreNumber == nil {
+		return nil
+	}
+	cp := make(map[string]int, len(s.coreNumber))
+	for k, v := range s.coreNumber {
+		cp[k] = v
+	}
+	return cp
+}
+
+// ArticulationPoints returns articulation points (cut vertices) detected on the undirected view.
+func (s *GraphStats) ArticulationPoints() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.articulation == nil {
+		return nil
+	}
+	var points []string
+	for k, v := range s.articulation {
+		if v {
+			points = append(points, k)
+		}
+	}
+	sort.Strings(points)
+	return points
+}
+
+// Slack returns per-node slack (longest-path slack; 0 on critical path).
+func (s *GraphStats) Slack() map[string]float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.slack == nil {
+		return nil
+	}
+	cp := make(map[string]float64, len(s.slack))
+	for k, v := range s.slack {
 		cp[k] = v
 	}
 	return cp
@@ -616,6 +664,9 @@ func (a *Analyzer) computePhase2WithProfile(stats *GraphStats, config AnalysisCo
 	localHubs := make(map[string]float64)
 	localAuthorities := make(map[string]float64)
 	localCriticalPath := make(map[string]float64)
+	localCore := make(map[string]int)
+	localArticulation := make(map[string]bool)
+	localSlack := make(map[string]float64)
 	var localCycles [][]string
 
 	// PageRank
@@ -759,6 +810,10 @@ func (a *Analyzer) computePhase2WithProfile(stats *GraphStats, config AnalysisCo
 		profile.Cycles = time.Since(cyclesStart)
 	}
 
+	// Advanced graph signals: k-core, articulation points (undirected), slack
+	localCore, localArticulation = a.computeCoreAndArticulation()
+	localSlack = a.computeSlack()
+
 	// Atomic assignment
 	stats.mu.Lock()
 	stats.pageRank = localPageRank
@@ -767,6 +822,9 @@ func (a *Analyzer) computePhase2WithProfile(stats *GraphStats, config AnalysisCo
 	stats.hubs = localHubs
 	stats.authorities = localAuthorities
 	stats.criticalPathScore = localCriticalPath
+	stats.coreNumber = localCore
+	stats.articulation = localArticulation
+	stats.slack = localSlack
 	stats.cycles = localCycles
 	stats.phase2Ready = true
 
@@ -1004,6 +1062,205 @@ func (a *Analyzer) computeHeights(sorted []graph.Node) map[string]float64 {
 	}
 
 	return impactScores
+}
+
+// computeCoreAndArticulation builds an undirected view to derive k-core numbers and articulation points.
+func (a *Analyzer) computeCoreAndArticulation() (map[string]int, map[string]bool) {
+	u := simple.NewUndirectedGraph()
+
+	// Add nodes
+	nodes := a.g.Nodes()
+	for nodes.Next() {
+		n := nodes.Node()
+		u.AddNode(simple.Node(n.ID()))
+	}
+
+	// Add undirected edges for each directed edge
+	edges := a.g.Edges()
+	for edges.Next() {
+		e := edges.Edge()
+		u.SetEdge(u.NewEdge(u.Node(e.From().ID()), u.Node(e.To().ID())))
+	}
+
+	core := computeKCore(u)
+	art := findArticulationPoints(u)
+
+	coreByID := make(map[string]int, len(core))
+	artByID := make(map[string]bool, len(art))
+	for id, val := range core {
+		coreByID[a.nodeToID[id]] = val
+	}
+	for id := range art {
+		artByID[a.nodeToID[id]] = true
+	}
+	return coreByID, artByID
+}
+
+// computeSlack calculates longest-path slack per node (0 on critical path).
+// Edges are interpreted in execution order (prereq -> dependent), i.e., reversed from the stored direction.
+func (a *Analyzer) computeSlack() map[string]float64 {
+	if len(a.issueMap) == 0 {
+		return nil
+	}
+
+	// Topological order (dependencies first)
+	var order []string
+	sorted, err := topo.Sort(a.g)
+	if err == nil {
+		for i := len(sorted) - 1; i >= 0; i-- {
+			order = append(order, a.nodeToID[sorted[i].ID()])
+		}
+	}
+	if len(order) == 0 {
+		return nil
+	}
+
+	distFromStart := make(map[string]int, len(order))
+	distToEnd := make(map[string]int, len(order))
+
+	// Map for quick node lookup
+	forwardDeps := func(id string) []int64 {
+		nID := a.idToNode[id]
+		to := a.g.To(nID) // dependents (nodes that require this)
+		var res []int64
+		for to.Next() {
+			res = append(res, to.Node().ID())
+		}
+		return res
+	}
+
+	// Forward pass: longest distance from any start to each node (using dependents)
+	for _, id := range order {
+		for _, dep := range forwardDeps(id) {
+			depID := a.nodeToID[dep]
+			if distFromStart[depID] < distFromStart[id]+1 {
+				distFromStart[depID] = distFromStart[id] + 1
+			}
+		}
+	}
+
+	// Reverse pass: longest distance from node to any end (using dependents)
+	for i := len(order) - 1; i >= 0; i-- {
+		id := order[i]
+		for _, dep := range forwardDeps(id) {
+			depID := a.nodeToID[dep]
+			if distToEnd[id] < distToEnd[depID]+1 {
+				distToEnd[id] = distToEnd[depID] + 1
+			}
+		}
+	}
+
+	longest := 0
+	for id := range distFromStart {
+		if d := distFromStart[id] + distToEnd[id]; d > longest {
+			longest = d
+		}
+	}
+
+	slack := make(map[string]float64, len(order))
+	for _, id := range order {
+		slack[id] = float64(longest - distFromStart[id] - distToEnd[id])
+	}
+	return slack
+}
+
+// computeKCore returns core numbers for an undirected graph using a simple degeneracy ordering.
+func computeKCore(g *simple.UndirectedGraph) map[int64]int {
+	deg := make(map[int64]int)
+	adj := make(map[int64][]int64)
+	nodes := g.Nodes()
+	for nodes.Next() {
+		n := nodes.Node()
+		it := g.From(n.ID())
+		for it.Next() {
+			adj[n.ID()] = append(adj[n.ID()], it.Node().ID())
+		}
+		deg[n.ID()] = len(adj[n.ID()])
+	}
+
+	core := make(map[int64]int, len(deg))
+	active := make(map[int64]bool, len(deg))
+	for id := range deg {
+		active[id] = true
+	}
+
+	for len(active) > 0 {
+		// pick min-degree active node
+		var pick int64
+		minDeg := math.MaxInt
+		for id, ok := range active {
+			if !ok {
+				continue
+			}
+			if deg[id] < minDeg {
+				minDeg = deg[id]
+				pick = id
+			}
+		}
+		core[pick] = minDeg
+		delete(active, pick)
+		for _, nbr := range adj[pick] {
+			if active[nbr] {
+				deg[nbr]--
+			}
+		}
+	}
+	return core
+}
+
+// findArticulationPoints runs Tarjan to find cut vertices in an undirected graph.
+func findArticulationPoints(g *simple.UndirectedGraph) map[int64]bool {
+	var timeIdx int
+	disc := make(map[int64]int)
+	low := make(map[int64]int)
+	parent := make(map[int64]int64)
+	ap := make(map[int64]bool)
+
+	var dfs func(v int64)
+	dfs = func(v int64) {
+		timeIdx++
+		disc[v] = timeIdx
+		low[v] = timeIdx
+		childCount := 0
+
+		it := g.From(v)
+		for it.Next() {
+			u := it.Node().ID()
+			if disc[u] == 0 {
+				parent[u] = v
+				childCount++
+				dfs(u)
+				low[v] = minInt(low[v], low[u])
+
+				// Root with >1 child OR low[u] >= disc[v]
+				if parent[v] == 0 && childCount > 1 {
+					ap[v] = true
+				}
+				if parent[v] != 0 && low[u] >= disc[v] {
+					ap[v] = true
+				}
+			} else if u != parent[v] {
+				low[v] = minInt(low[v], disc[u])
+			}
+		}
+	}
+
+	nodes := g.Nodes()
+	for nodes.Next() {
+		id := nodes.Node().ID()
+		if disc[id] == 0 {
+			parent[id] = 0
+			dfs(id)
+		}
+	}
+	return ap
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // isBlockingDep returns true if the dependency type represents a blocking relationship.

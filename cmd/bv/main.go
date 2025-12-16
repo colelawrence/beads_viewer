@@ -597,6 +597,29 @@ func main() {
 			return trim
 		}
 
+		limitMapInt := func(m map[string]int, limit int) map[string]int {
+			if limit <= 0 || len(m) <= limit {
+				return m
+			}
+			trim := make(map[string]int, limit)
+			count := 0
+			for k, v := range m {
+				trim[k] = v
+				count++
+				if count >= limit {
+					break
+				}
+			}
+			return trim
+		}
+
+		limitSlice := func(s []string, limit int) []string {
+			if limit <= 0 || len(s) <= limit {
+				return s
+			}
+			return s[:limit]
+		}
+
 		// Default cap to keep payload small; allow override via env
 		mapLimit := 200
 		if v := os.Getenv("BV_INSIGHTS_MAP_LIMIT"); v != "" {
@@ -612,6 +635,9 @@ func main() {
 			Hubs              map[string]float64 `json:"hubs"`
 			Authorities       map[string]float64 `json:"authorities"`
 			CriticalPathScore map[string]float64 `json:"critical_path_score"`
+			CoreNumber        map[string]int     `json:"core_number"`
+			Slack             map[string]float64 `json:"slack"`
+			Articulation      []string           `json:"articulation_points"`
 		}{
 			PageRank:          limitMaps(stats.PageRank(), mapLimit),
 			Betweenness:       limitMaps(stats.Betweenness(), mapLimit),
@@ -619,6 +645,9 @@ func main() {
 			Hubs:              limitMaps(stats.Hubs(), mapLimit),
 			Authorities:       limitMaps(stats.Authorities(), mapLimit),
 			CriticalPathScore: limitMaps(stats.CriticalPathScore(), mapLimit),
+			CoreNumber:        limitMapInt(stats.CoreNumber(), mapLimit),
+			Slack:             limitMaps(stats.Slack(), mapLimit),
+			Articulation:      limitSlice(stats.ArticulationPoints(), mapLimit),
 		}
 
 		// Get top what-if deltas for issues with highest downstream impact (bv-83)
@@ -632,6 +661,7 @@ func main() {
 			analysis.Insights
 			FullStats  interface{}            `json:"full_stats"`
 			TopWhatIfs []analysis.WhatIfEntry `json:"top_what_ifs,omitempty"` // Issues with highest downstream impact (bv-83)
+			UsageHints []string               `json:"usage_hints"`            // bv-84: Agent-friendly hints
 		}{
 			GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 			DataHash:       dataHash,
@@ -640,6 +670,14 @@ func main() {
 			Insights:       insights,
 			FullStats:      fullStats,
 			TopWhatIfs:     topWhatIfs,
+			UsageHints: []string{
+				"jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
+				"jq '.CriticalPath[:3]' - Top 3 critical path items",
+				"jq '.top_what_ifs[] | select(.delta.direct_unblocks > 2)' - High-impact items",
+				"jq '.full_stats.pagerank | to_entries | sort_by(-.value)[:5]' - Top PageRank",
+				"jq '.Cycles | length' - Count of detected cycles",
+				"BV_INSIGHTS_MAP_LIMIT=50 bv --robot-insights - Reduce map sizes",
+			},
 		}
 
 		encoder := json.NewEncoder(os.Stdout)
@@ -669,12 +707,20 @@ func main() {
 			AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
 			Status         analysis.MetricStatus   `json:"status"`
 			Plan           analysis.ExecutionPlan  `json:"plan"`
+			UsageHints     []string                `json:"usage_hints"` // bv-84: Agent-friendly hints
 		}{
 			GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 			DataHash:       dataHash,
 			AnalysisConfig: cfg,
 			Status:         status,
 			Plan:           plan,
+			UsageHints: []string{
+				"jq '.plan.tracks | length' - Number of parallel execution tracks",
+				"jq '.plan.tracks[0].items | map(.id)' - First track item IDs",
+				"jq '.plan.tracks[].items[] | select(.unblocks | length > 0)' - Items that unblock others",
+				"jq '.plan.summary' - High-level execution summary",
+				"jq '[.plan.tracks[].items[]] | length' - Total items across all tracks",
+			},
 		}
 
 		encoder := json.NewEncoder(os.Stdout)
@@ -862,10 +908,28 @@ func main() {
 			os.Exit(0)
 		}
 
-		// Full triage output
+		// Full triage output with usage hints
+		output := struct {
+			GeneratedAt string                `json:"generated_at"`
+			DataHash    string                `json:"data_hash"`
+			Triage      analysis.TriageResult `json:"triage"`
+			UsageHints  []string              `json:"usage_hints"` // bv-84: Agent-friendly hints
+		}{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+			DataHash:    dataHash,
+			Triage:      triage,
+			UsageHints: []string{
+				"jq '.triage.quick_ref.top_picks[:3]' - Top 3 picks for immediate work",
+				"jq '.triage.quick_ref.next_up' - Secondary candidates after top picks",
+				"jq '.triage.blockers | map(.id)' - All blocking issue IDs",
+				"jq '.triage.categories.bugs' - Bug-specific triage",
+				"jq '.triage.quick_ref.top_picks[] | select(.unblocks > 2)' - High-impact picks",
+				"--robot-next - Get only the single top recommendation",
+			},
+		}
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(triage); err != nil {
+		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding robot-triage: %v\n", err)
 			os.Exit(1)
 		}

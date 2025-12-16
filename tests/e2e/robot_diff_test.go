@@ -13,7 +13,7 @@ import (
 func buildBvBinary(t *testing.T) string {
 	t.Helper()
 	binPath := filepath.Join(t.TempDir(), "bv")
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/bv/main.go")
+	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/bv")
 	cmd.Dir = "../../"
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build bv failed: %v\n%s", err, out)
