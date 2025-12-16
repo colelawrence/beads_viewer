@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -418,7 +419,7 @@ func computeUrgency(issue *model.Issue, now time.Time) (float64, string) {
 	if daysSinceCreated > 0 {
 		// Decay factor: 0.0 at creation, grows toward 0.5 max contribution
 		// Formula: 0.5 * (1 - e^(-days/halfLife))
-		decayFactor := 0.5 * (1.0 - exp(-daysSinceCreated/UrgencyDecayDays))
+		decayFactor := 0.5 * (1.0 - math.Exp(-daysSinceCreated/UrgencyDecayDays))
 		score += decayFactor
 
 		if daysSinceCreated >= 14 {
@@ -440,31 +441,6 @@ func computeUrgency(issue *model.Issue, now time.Time) (float64, string) {
 	}
 
 	return score, explanation
-}
-
-// exp returns e^x (simple approximation for small values, exact for common cases)
-func exp(x float64) float64 {
-	// Use math.Exp equivalent approximation
-	// For the decay calculation, we can use a simple Taylor series approximation
-	// e^x ≈ 1 + x + x²/2 + x³/6 for small |x|
-	if x > 10 {
-		return 22026.0 // e^10
-	}
-	if x < -10 {
-		return 0.0
-	}
-
-	// For better accuracy, use iterative calculation
-	result := 1.0
-	term := 1.0
-	for i := 1; i <= 20; i++ {
-		term *= x / float64(i)
-		result += term
-		if term < 1e-10 && term > -1e-10 {
-			break
-		}
-	}
-	return result
 }
 
 // WhatIfDelta shows the impact of completing an issue

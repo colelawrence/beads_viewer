@@ -393,7 +393,7 @@ func ComputeVelocityMetrics(issues []model.Issue, now time.Time) VelocityMetrics
 	// Simple score: closed in last month scaled plus recency bonus
 	velocityScore := 0
 	if closed30 > 0 {
-		velocityScore = int(minFloat(100, float64(closed30)*10))
+		velocityScore = int(min(100.0, float64(closed30)*10))
 	}
 	// Bonus if trend improving
 	if trendDir == "improving" && velocityScore < 100 {
@@ -446,7 +446,7 @@ func ComputeFreshnessMetrics(issues []model.Issue, now time.Time, staleDays int)
 		avgStaleness = totalStaleness / float64(count)
 	}
 	// Freshness score: 100 when avg=0, declines linearly to 0 at 2x threshold
-	freshnessScore := int(maxFloat(0, 100-(avgStaleness/(threshold*2))*100))
+	freshnessScore := int(max(0.0, 100-(avgStaleness/(threshold*2))*100))
 
 	return FreshnessMetrics{
 		MostRecentUpdate:   mostRecent,
@@ -667,20 +667,6 @@ func clampScore(v int) int {
 		return 100
 	}
 	return v
-}
-
-func minFloat(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxFloat(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // ============================================================================
@@ -1972,7 +1958,7 @@ func ComputeLabelAttentionScores(issues []model.Issue, cfg LabelHealthConfig, no
 	result.TotalLabels = len(scores)
 
 	// Extract top/low attention labels
-	topN := minInt(3, len(scores))
+	topN := min(3, len(scores))
 	for i := 0; i < topN; i++ {
 		result.TopAttention = append(result.TopAttention, scores[i].Label)
 	}

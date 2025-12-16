@@ -12,16 +12,16 @@ import (
 // ETAEstimate is a lightweight, deterministic ETA prediction for a single issue.
 // It is designed to be surfaced by robot outputs (bv-158) and used by capacity simulation (bv-160).
 type ETAEstimate struct {
-	IssueID              string    `json:"issue_id"`
-	EstimatedMinutes     int       `json:"estimated_minutes"`
-	EstimatedDays        float64   `json:"estimated_days"`
-	ETADate              time.Time `json:"eta_date"`
-	ETADateLow           time.Time `json:"eta_date_low,omitempty"`
-	ETADateHigh          time.Time `json:"eta_date_high,omitempty"`
-	Confidence           float64   `json:"confidence"` // 0..1
+	IssueID               string    `json:"issue_id"`
+	EstimatedMinutes      int       `json:"estimated_minutes"`
+	EstimatedDays         float64   `json:"estimated_days"`
+	ETADate               time.Time `json:"eta_date"`
+	ETADateLow            time.Time `json:"eta_date_low,omitempty"`
+	ETADateHigh           time.Time `json:"eta_date_high,omitempty"`
+	Confidence            float64   `json:"confidence"` // 0..1
 	VelocityMinutesPerDay float64   `json:"velocity_minutes_per_day"`
-	Agents               int       `json:"agents"`
-	Factors              []string  `json:"factors,omitempty"`
+	Agents                int       `json:"agents"`
+	Factors               []string  `json:"factors,omitempty"`
 }
 
 // EstimateETAForIssue estimates an ETA for a single issue using:
@@ -62,10 +62,10 @@ func EstimateETAForIssue(issues []model.Issue, stats *GraphStats, issueID string
 	}
 
 	confidence := estimateETAConfidence(issue, velocitySamples)
-	deltaDays := maxFloat(0.5, estimatedDays*(1.0-confidence)*0.8)
+	deltaDays := max(0.5, estimatedDays*(1.0-confidence)*0.8)
 
 	eta := now.Add(durationDays(estimatedDays))
-	etaLow := now.Add(durationDays(maxFloat(0, estimatedDays-deltaDays)))
+	etaLow := now.Add(durationDays(max(0.0, estimatedDays-deltaDays)))
 	etaHigh := now.Add(durationDays(estimatedDays + deltaDays))
 
 	factors := append([]string{}, complexityFactors...)
@@ -129,12 +129,12 @@ func estimateComplexityMinutes(issue model.Issue, stats *GraphStats, medianMinut
 	if stats != nil {
 		depth = stats.GetCriticalPathScore(issue.ID)
 	}
-	depthFactor := 1.0 + minFloat(1.0, depth/10.0) // up to 2×
+	depthFactor := 1.0 + min(1.0, depth/10.0) // up to 2×
 	factors = append(factors, fmt.Sprintf("depth: %.0f×%.2f", depth, depthFactor))
 
 	// Description length proxy — long specs often hide complexity.
 	descRunes := len([]rune(issue.Description))
-	descFactor := 1.0 + minFloat(1.0, float64(descRunes)/2000.0) // up to 2×
+	descFactor := 1.0 + min(1.0, float64(descRunes)/2000.0) // up to 2×
 	if descRunes > 0 {
 		factors = append(factors, fmt.Sprintf("desc: %dr×%.2f", descRunes, descFactor))
 	} else {
@@ -283,8 +283,6 @@ func durationDays(days float64) time.Duration {
 	return time.Duration(days * float64(24*time.Hour))
 }
 
-// minFloat and maxFloat are defined in label_health.go
-
 func clampFloat(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo
@@ -294,4 +292,3 @@ func clampFloat(v, lo, hi float64) float64 {
 	}
 	return v
 }
-

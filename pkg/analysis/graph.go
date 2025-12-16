@@ -1225,13 +1225,6 @@ func findArticulationPoints(g *simple.UndirectedGraph) map[int64]bool {
 	return ap
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // GetActionableIssues returns issues that can be worked on immediately.
 // An issue is actionable if:
 // 1. It is not closed
