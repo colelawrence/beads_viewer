@@ -973,6 +973,422 @@ Each card displays rich metadata at a glance:
 
 ---
 
+## 🔄 List Sorting: Multi-Dimensional Organization
+
+Press `s` to cycle through **five distinct sort modes**, giving you instant control over how issues are organized. The current sort mode is displayed in the status bar.
+
+### Sort Modes
+
+| Mode | Key Display | Ordering Logic | Use Case |
+|------|-------------|----------------|----------|
+| **Default** | `Default` | Priority (asc) → Created (desc) | Standard priority-driven workflow |
+| **Created ↑** | `Created ↑` | Creation date ascending (oldest first) | Audit: find long-standing issues |
+| **Created ↓** | `Created ↓` | Creation date descending (newest first) | Review: see recently created work |
+| **Priority** | `Priority` | Priority only (P0 → P4) | Pure priority triage |
+| **Updated** | `Updated` | Last update descending (newest first) | Activity tracking: see active issues |
+
+### Design Philosophy
+
+The sort system uses a **stable secondary sort** to ensure deterministic ordering. When primary sort values are equal, issues fall back to ID ordering for consistency across sessions. This prevents the "shuffling list" problem where equal-priority items randomly reorder.
+
+### Status Bar Indicator
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  📋 ISSUES                                    [Created ↓]  │
+├────────────────────────────────────────────────────────────┤
+│  OPEN   FEAT-789  Add dark mode toggle           P2  🟢   │
+│  OPEN   BUG-456   Fix login race condition       P1  🟢   │
+│  OPEN   TASK-123  Update documentation           P3  🟢   │
+└────────────────────────────────────────────────────────────┘
+```
+
+The `[Created ↓]` badge instantly communicates the active sort mode without requiring you to remember which mode you're in.
+
+---
+
+## 📜 History View: Bead-to-Commit Correlation
+
+Press `h` to open the **History View**—an interactive timeline that correlates beads with their related git commits. This bridges the gap between "what work was planned" and "what code was actually written."
+
+### The Correlation Engine
+
+The `pkg/correlation` package implements a **multi-strategy correlation system** that infers relationships between beads and commits using several techniques:
+
+```mermaid
+graph TD
+    %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#e8f5e9', 'lineColor': '#90a4ae'}}}%%
+
+    subgraph strategies ["🔍 Correlation Strategies"]
+        E["Explicit Mentions<br/><small>Commit contains bead ID</small>"]
+        T["Temporal Proximity<br/><small>Commit near bead events</small>"]
+        C["Co-Commit Analysis<br/><small>Files changed together</small>"]
+        P["Path Matching<br/><small>File paths match bead scope</small>"]
+    end
+
+    subgraph scorer ["📊 Confidence Scorer"]
+        S["Multi-Factor Scoring<br/><small>Weighted combination</small>"]
+    end
+
+    subgraph output ["📈 Output"]
+        H["BeadHistory<br/><small>Events + Commits + Milestones</small>"]
+    end
+
+    E --> S
+    T --> S
+    C --> S
+    P --> S
+    S --> H
+
+    classDef strategy fill:#e3f2fd,stroke:#90caf9,stroke-width:2px,color:#1565c0
+    classDef score fill:#fff8e1,stroke:#ffcc80,stroke-width:2px,color:#e65100
+    classDef out fill:#e8f5e9,stroke:#a5d6a7,stroke-width:2px,color:#2e7d32
+
+    class E,T,C,P strategy
+    class S score
+    class H out
+```
+
+### Correlation Strategies
+
+| Strategy | Weight | How It Works |
+|----------|--------|--------------|
+| **Explicit Mentions** | High | Commit message contains bead ID (e.g., `fix(auth): resolve race condition [BV-123]`) |
+| **Temporal Proximity** | Medium | Commit timestamp falls within bead's active lifecycle window |
+| **Co-Commit Analysis** | Medium | Files frequently modified together suggest shared purpose |
+| **Path Matching** | Low | File paths match bead's label scope (e.g., `pkg/auth/*` for `auth` label) |
+
+### Confidence Scoring
+
+Each correlation receives a **confidence score** (0.0–1.0) computed by:
+
+$$
+\text{Confidence} = w_1 \cdot \text{Explicit} + w_2 \cdot \text{Temporal} + w_3 \cdot \text{CoCommit} + w_4 \cdot \text{Path}
+$$
+
+Default weights: Explicit=0.5, Temporal=0.25, CoCommit=0.15, Path=0.10
+
+### History View Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  📜 HISTORY VIEW                                      [Confidence ≥ 0.5]│
+├────────────────────────┬────────────────────────────────────────────────┤
+│  BEADS                 │  COMMIT DETAIL                                 │
+│  ─────────────────     │  ─────────────────────────────────────────     │
+│ ▸ BV-123 (3 commits)   │  abc1234 - Fix auth race condition             │
+│   BV-456 (1 commit)    │  Author: alice@example.com                     │
+│   BV-789 (5 commits)   │  Date:   2025-01-15 14:32:00                   │
+│   BV-100 (2 commits)   │  Confidence: 0.85 (explicit mention)           │
+│                        │                                                 │
+│                        │  Files changed:                                 │
+│                        │    M pkg/auth/session.go (+42, -18)            │
+│                        │    M pkg/auth/token.go (+15, -3)               │
+│                        │                                                 │
+│                        │  Commit message:                                │
+│                        │  > Fix race condition in session refresh.      │
+│                        │  > Closes BV-123.                              │
+└────────────────────────┴────────────────────────────────────────────────┘
+```
+
+### History Navigation
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move between beads |
+| `Tab` | Switch between bead list and commit detail |
+| `Enter` | Expand/collapse commit list |
+| `c` | Cycle confidence threshold (0.0 → 0.3 → 0.5 → 0.7) |
+| `y` | Copy selected commit SHA to clipboard |
+| `h` / `Esc` | Exit history view |
+
+### Robot Command: `--robot-history`
+
+```bash
+bv --robot-history                          # Full history report
+bv --robot-history --bead-history BV-123    # Single bead focus
+bv --robot-history --history-since '30 days ago'
+bv --robot-history --min-confidence 0.7     # High-confidence only
+```
+
+**Output Schema:**
+```json
+{
+  "stats": {
+    "total_beads": 58,
+    "beads_with_commits": 42,
+    "total_commits": 156,
+    "avg_cycle_time_hours": 72.5,
+    "method_distribution": {
+      "explicit": 89,
+      "temporal": 45,
+      "cocommit": 22
+    }
+  },
+  "histories": {
+    "BV-123": {
+      "events": [...],
+      "commits": [...],
+      "milestones": [...],
+      "cycle_time_hours": 48.2
+    }
+  },
+  "commit_index": {
+    "abc1234": ["BV-123", "BV-456"]
+  }
+}
+```
+
+---
+
+## 📅 Sprint Dashboard: Burndown & Progress Tracking
+
+Press `P` (uppercase) to open the **Sprint Dashboard**—a comprehensive view of sprint progress with burndown visualization, scope change tracking, and at-risk detection.
+
+### Dashboard Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  📅 Sprint: January 2025                                                │
+│  ───────────────────────────────────────────────────────────────────    │
+│  Dates:     Jan 6 → Jan 20                                              │
+│  Remaining: 5 days                                                      │
+│                                                                         │
+│  ══════════════════════════════════════════════════════════════════    │
+│                          PROGRESS                                       │
+│  ══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Total: 24 beads    Closed: 18 (75%)    Remaining: 6                    │
+│  [████████████████████░░░░░░] 75%                                       │
+│                                                                         │
+│  ══════════════════════════════════════════════════════════════════    │
+│                          BURNDOWN                                       │
+│  ══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  24 ┤ ·                                                                 │
+│  20 ┤  ·····                                                            │
+│  16 ┤       ····▸                                                       │
+│  12 ┤            ╲    (ideal)                                           │
+│   8 ┤             ╲                                                     │
+│   4 ┤              ╲                                                    │
+│   0 ┼──────────────────────────────────────────────────────────────    │
+│     Jan 6          Jan 13                Jan 20                         │
+│                                                                         │
+│  Legend: · = Actual    ╲ = Ideal    ▸ = Today                           │
+│                                                                         │
+│  ══════════════════════════════════════════════════════════════════    │
+│                       SCOPE CHANGES                                     │
+│  ══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Jan 8:  +2 beads added (BV-456, BV-457)                                │
+│  Jan 10: -1 bead removed (BV-100 moved to backlog)                      │
+│                                                                         │
+│  ══════════════════════════════════════════════════════════════════    │
+│                        AT-RISK ITEMS                                    │
+│  ══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  ⚠ BV-789 (P0 Critical) - Blocked for 3 days                           │
+│  ⚠ BV-234 (P1 High) - No activity for 5 days                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Burndown Calculation
+
+The burndown chart implements a **scope-aware algorithm** that tracks not just completion velocity but also scope changes:
+
+1. **Ideal Burn Rate:** `Total Beads / Sprint Duration`
+2. **Actual Burn Rate:** `Closed Beads / Days Elapsed`
+3. **Scope Events:** Added/removed beads create discontinuities in the ideal line
+
+When beads are added mid-sprint, the burndown recalculates the ideal trajectory from that point forward, providing a realistic view of progress rather than a misleading "behind schedule" indicator.
+
+### At-Risk Detection
+
+Items are flagged as at-risk based on multiple heuristics:
+
+| Signal | Threshold | Reason |
+|--------|-----------|--------|
+| **Blocked Duration** | > 2 days | Dependency bottleneck |
+| **No Activity** | > 4 days | Potentially stuck or forgotten |
+| **High Priority Blocked** | P0/P1 blocked | Critical path impediment |
+| **Dependencies Not Closing** | Blockers still open | Cascading delay risk |
+
+### Robot Commands
+
+```bash
+bv --robot-sprint-list                # List all sprints
+bv --robot-sprint-show sprint-1       # Details for specific sprint
+bv --robot-burndown current           # Burndown for active sprint
+bv --robot-burndown sprint-1          # Burndown for specific sprint
+```
+
+**Burndown Output:**
+```json
+{
+  "sprint_id": "sprint-1",
+  "total_days": 14,
+  "elapsed_days": 9,
+  "remaining_days": 5,
+  "total_issues": 24,
+  "completed_issues": 18,
+  "remaining_issues": 6,
+  "ideal_burn_rate": 1.71,
+  "actual_burn_rate": 2.0,
+  "projected_complete": "2025-01-18",
+  "on_track": true,
+  "scope_changes": [
+    {"date": "2025-01-08", "delta": 2, "reason": "Added BV-456, BV-457"}
+  ]
+}
+```
+
+---
+
+## 🏷️ Label Analytics: Domain-Centric Health Monitoring
+
+Press `L` (uppercase) to open the **Label Dashboard**—a table view showing health metrics for each label in your project. This enables **domain-driven prioritization** by surfacing which areas of your codebase need attention.
+
+### Label Dashboard Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🏷️ LABEL HEALTH                                                        │
+├──────────────┬────────┬────────┬────────┬────────┬────────┬────────────┤
+│  Label       │ Health │ Status │ Open   │ Blocked│ Stale  │ Velocity   │
+├──────────────┼────────┼────────┼────────┼────────┼────────┼────────────┤
+│  🔴 api      │  0.32  │ CRIT   │   12   │   5    │   3    │   0.8/wk   │
+│  🟡 auth     │  0.58  │ WARN   │    8   │   2    │   1    │   2.1/wk   │
+│  🟢 ui       │  0.85  │ OK     │    4   │   0    │   0    │   4.2/wk   │
+│  🟢 docs     │  0.92  │ OK     │    2   │   0    │   0    │   1.5/wk   │
+│  🟡 infra    │  0.61  │ WARN   │    6   │   1    │   2    │   1.2/wk   │
+└──────────────┴────────┴────────┴────────┴────────┴────────┴────────────┘
+```
+
+### Health Score Calculation
+
+The label health score combines multiple factors:
+
+$$
+\text{Health} = 1 - \left( w_1 \cdot \frac{\text{Blocked}}{\text{Open}} + w_2 \cdot \frac{\text{Stale}}{\text{Open}} + w_3 \cdot (1 - \text{VelocityScore}) \right)
+$$
+
+| Component | Weight | Meaning |
+|-----------|--------|---------|
+| **Blocked Ratio** | 0.4 | High blocked count indicates bottlenecks |
+| **Stale Ratio** | 0.3 | Stale issues suggest neglect |
+| **Velocity Inverse** | 0.3 | Low throughput indicates capacity issues |
+
+### Health Levels
+
+| Level | Score Range | Indicator | Action |
+|-------|-------------|-----------|--------|
+| **Critical** | 0.0 – 0.4 | 🔴 | Immediate attention required |
+| **Warning** | 0.4 – 0.7 | 🟡 | Monitor closely |
+| **Healthy** | 0.7 – 1.0 | 🟢 | On track |
+
+### Robot Commands for Label Analysis
+
+**`--robot-label-health`**: Per-label health metrics
+```bash
+bv --robot-label-health
+bv --robot-label-health | jq '.results.labels[] | select(.health_level == "critical")'
+```
+
+**`--robot-label-flow`**: Cross-label dependency flow matrix
+```bash
+bv --robot-label-flow
+bv --robot-label-flow | jq '.flow.bottleneck_labels'
+```
+
+**`--robot-label-attention`**: Attention-ranked labels for prioritization
+```bash
+bv --robot-label-attention --attention-limit=5
+```
+
+### Label-Scoped Analysis
+
+Use `--label` to scope any robot command to a specific label's subgraph:
+
+```bash
+bv --robot-insights --label api    # Graph metrics for api-labeled issues only
+bv --robot-plan --label backend    # Execution plan for backend domain
+bv --robot-priority --label auth   # Priority recommendations for auth work
+```
+
+This enables **domain isolation**: analyze and plan within a bounded context rather than the entire project graph.
+
+### Flow Matrix: Cross-Label Dependencies
+
+The flow matrix reveals how labels depend on each other:
+
+```
+          → api  → auth  → ui   → docs
+api         -      3       2      0
+auth        1      -       0      1
+ui          4      2       -      0
+docs        0      0       0      -
+```
+
+Read as: "api has 3 issues that depend on auth issues." High values indicate coupling between domains; the `bottleneck_labels` field highlights labels that block the most cross-domain work.
+
+---
+
+## 🌐 Static Site Export: Shareable Dashboards
+
+`bv` can generate **self-contained static websites** for sharing project status with stakeholders who don't have terminal access.
+
+### Interactive Wizard
+
+```bash
+bv --pages
+```
+
+Launches an interactive wizard that guides you through:
+1. **Export**: Generate the static bundle
+2. **Preview**: Local server at `http://localhost:9000`
+3. **Deploy**: Push to GitHub Pages with automatic repository creation
+
+### Direct Export
+
+```bash
+bv --export-pages ./bv-pages                    # Export to directory
+bv --export-pages ./bv-pages --pages-title "Sprint 42 Status"
+bv --export-pages ./bv-pages --pages-include-closed
+```
+
+### What Gets Generated
+
+```
+./bv-pages/
+├── index.html              # Main dashboard
+├── beads.sqlite3           # Full-text searchable database
+├── data/
+│   ├── issues.json         # Issue data
+│   ├── insights.json       # Graph metrics
+│   └── triage.json         # Triage recommendations
+└── assets/
+    ├── app.js              # Viewer application
+    └── styles.css          # Theme styles
+```
+
+### Features
+
+- **Full-Text Search**: SQLite FTS5 enables instant search over titles/descriptions
+- **Interactive Graph**: Visualize dependencies (powered by D3.js)
+- **Triage View**: Same recommendations as `--robot-triage`
+- **Offline Support**: Works without network after initial load
+- **Mobile Responsive**: Adapts to phone/tablet screens
+
+### Deployment Options
+
+| Platform | Command | Notes |
+|----------|---------|-------|
+| **GitHub Pages** | `bv --pages` (wizard) | Auto-creates `gh-pages` branch |
+| **Cloudflare Pages** | `bv --export-pages ./dist` + CF dashboard | Connect to git repo |
+| **Any Static Host** | `bv --export-pages ./dist` | Netlify, Vercel, S3, etc. |
+
+---
+
 ## 🤖 Complete CLI Reference
 
 Beyond the interactive TUI, `bv` provides a comprehensive **command-line interface** for scripting, automation, and AI agent integration.
@@ -991,9 +1407,17 @@ These commands output **structured JSON** designed for programmatic consumption:
 
 | Command | Output | Use Case |
 |---------|--------|----------|
+| `--robot-triage` | **THE MEGA-COMMAND**: unified triage with all analysis | Single entry point for agents |
+| `--robot-next` | Single top recommendation + claim command | Quick "what's next?" answer |
 | `--robot-insights` | Graph metrics + top N lists | Project health assessment |
 | `--robot-plan` | Actionable tracks + dependencies | Work queue generation |
-| `--robot-priority` | Priority recommendations | Automated triage |
+| `--robot-priority` | Priority recommendations | Automated priority fixing |
+| `--robot-history` | Bead-to-commit correlations | Code change tracking |
+| `--robot-label-health` | Per-label health metrics | Domain health monitoring |
+| `--robot-label-flow` | Cross-label dependency matrix | Inter-domain analysis |
+| `--robot-label-attention` | Attention-ranked labels | Domain prioritization |
+| `--robot-sprint-list` | All sprints as JSON | Sprint planning |
+| `--robot-burndown` | Sprint burndown data | Progress tracking |
 | `--robot-suggest` | Hygiene suggestions (deps/dupes/labels/cycles) | Project cleanup automation |
 | `--robot-diff` | JSON diff (with `--diff-since`) | Change tracking |
 | `--robot-recipes` | Available recipe list | Recipe discovery |
@@ -1449,28 +1873,37 @@ bv
 | **Filters** | `o` | Show **Open** Issues |
 | | `r` | Show **Ready** (Unblocked) |
 | | `c` | Show **Closed** Issues |
+| | `a` | Show **All** Issues |
 | | `/` | **Search** (Fuzzy) |
 | | `Ctrl+S` | Toggle **Search Mode** (Semantic ↔ Fuzzy) |
+| | `l` | **Label Picker** (quick filter by label) |
+| **List Sorting** | `s` | Cycle Sort Mode (Default → Created ↑ → Created ↓ → Priority → Updated) |
 | **Views** | `b` | Toggle **Kanban Board** |
 | | `i` | Toggle **Insights Dashboard** |
 | | `g` | Toggle **Graph Visualizer** |
 | | `a` | Toggle **Actionable Plan** |
+| | `h` | Toggle **History View** (bead-to-commit correlation) |
+| | `f` | Toggle **Flow Matrix** (cross-label dependencies) |
+| | `F3` | Toggle **Label Dashboard** (label health analytics) |
+| | `F4` | Toggle **Attention View** (label attention scores) |
 | **Kanban Board** | `h` / `l` | Move Between Columns |
 | | `j` / `k` | Move Within Column |
 | **Insights Dashboard** | `Tab` | Next Panel |
 | | `Shift+Tab` | Previous Panel |
 | | `e` | Toggle Explanations |
 | | `x` | Toggle Calculation Proof |
+| | `m` | Toggle Heatmap Overlay |
 | **Graph View** | `H` / `L` | Scroll Left / Right |
 | | `Ctrl+D` / `Ctrl+U` | Page Down / Up |
 | **Time-Travel & Analysis** | `t` | Time-Travel Mode (custom revision) |
 | | `T` | Quick Time-Travel (HEAD~5) |
 | | `p` | Toggle Priority Hints Overlay |
-| **Actions** | `E` | Export to Markdown File |
+| **Actions** | `x` | Export to Markdown File |
 | | `C` | Copy Issue to Clipboard |
 | | `O` | Open in Editor |
 | **Global** | `?` | Toggle Help Overlay |
-| | `R` | Recipe Picker |
+| | `F5` | Recipe Picker |
+| | `w` | Repo Picker (workspace mode) |
 
 ---
 
