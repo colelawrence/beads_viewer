@@ -186,6 +186,298 @@ func TestRobotTriageContract(t *testing.T) {
 	}
 }
 
+func TestRobotTriageByTrackContract(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	// Two independent tracks: A->A2 and B->B2.
+	writeBeads(t, env, `{"id":"A","title":"Track A root","status":"open","priority":1,"issue_type":"task","labels":["api"]}
+{"id":"A2","title":"Track A blocked","status":"open","priority":2,"issue_type":"task","labels":["api"],"dependencies":[{"issue_id":"A2","depends_on_id":"A","type":"blocks"}]}
+{"id":"B","title":"Track B root","status":"open","priority":1,"issue_type":"task","labels":["web"]}
+{"id":"B2","title":"Track B blocked","status":"open","priority":2,"issue_type":"task","labels":["web"],"dependencies":[{"issue_id":"B2","depends_on_id":"B","type":"blocks"}]}`)
+
+	var payload struct {
+		DataHash string `json:"data_hash"`
+		Triage   struct {
+			RecommendationsByTrack []struct {
+				TrackID string `json:"track_id"`
+				TopPick *struct {
+					ID string `json:"id"`
+				} `json:"top_pick"`
+				ClaimCommand string `json:"claim_command"`
+			} `json:"recommendations_by_track"`
+		} `json:"triage"`
+	}
+	runRobotJSON(t, bv, env, "--robot-triage-by-track", &payload)
+
+	if payload.DataHash == "" {
+		t.Fatalf("triage-by-track missing data_hash")
+	}
+	if len(payload.Triage.RecommendationsByTrack) < 2 {
+		t.Fatalf("expected >=2 track groups, got %d", len(payload.Triage.RecommendationsByTrack))
+	}
+	byID := make(map[string]struct {
+		topID string
+		claim string
+	})
+	for _, g := range payload.Triage.RecommendationsByTrack {
+		if g.TrackID == "" {
+			t.Fatalf("track group missing track_id")
+		}
+		if g.TopPick == nil || g.TopPick.ID == "" {
+			t.Fatalf("track group %q missing top_pick", g.TrackID)
+		}
+		byID[g.TrackID] = struct {
+			topID string
+			claim string
+		}{topID: g.TopPick.ID, claim: g.ClaimCommand}
+	}
+
+	for _, want := range []string{"track-A", "track-B"} {
+		g, ok := byID[want]
+		if !ok {
+			t.Fatalf("missing track group %q", want)
+		}
+		if g.topID == "" {
+			t.Fatalf("track group %q missing top_pick.id", want)
+		}
+		if g.claim == "" {
+			t.Fatalf("track group %q missing claim_command", want)
+		}
+	}
+}
+
+func TestRobotTriageByLabelContract(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	// Mix labels and include dependencies so scores are non-trivial.
+	writeBeads(t, env, `{"id":"API-1","title":"API root","status":"open","priority":1,"issue_type":"task","labels":["api"]}
+{"id":"WEB-1","title":"WEB root","status":"open","priority":1,"issue_type":"task","labels":["web"]}
+{"id":"WEB-2","title":"WEB blocked by API","status":"open","priority":2,"issue_type":"task","labels":["web"],"dependencies":[{"issue_id":"WEB-2","depends_on_id":"API-1","type":"blocks"}]}`)
+
+	var payload struct {
+		DataHash string `json:"data_hash"`
+		Triage   struct {
+			RecommendationsByLabel []struct {
+				Label   string `json:"label"`
+				TopPick *struct {
+					ID string `json:"id"`
+				} `json:"top_pick"`
+				ClaimCommand string `json:"claim_command"`
+			} `json:"recommendations_by_label"`
+		} `json:"triage"`
+	}
+	runRobotJSON(t, bv, env, "--robot-triage-by-label", &payload)
+
+	if payload.DataHash == "" {
+		t.Fatalf("triage-by-label missing data_hash")
+	}
+	if len(payload.Triage.RecommendationsByLabel) < 2 {
+		t.Fatalf("expected >=2 label groups, got %d", len(payload.Triage.RecommendationsByLabel))
+	}
+	byLabel := make(map[string]struct {
+		topID string
+		claim string
+	})
+	for _, g := range payload.Triage.RecommendationsByLabel {
+		if g.Label == "" {
+			t.Fatalf("label group missing label")
+		}
+		if g.TopPick == nil || g.TopPick.ID == "" {
+			t.Fatalf("label group %q missing top_pick", g.Label)
+		}
+		byLabel[g.Label] = struct {
+			topID string
+			claim string
+		}{topID: g.TopPick.ID, claim: g.ClaimCommand}
+	}
+
+	for _, want := range []string{"api", "web"} {
+		g, ok := byLabel[want]
+		if !ok {
+			t.Fatalf("missing label group %q", want)
+		}
+		if g.topID == "" {
+			t.Fatalf("label group %q missing top_pick.id", want)
+		}
+		if g.claim == "" {
+			t.Fatalf("label group %q missing claim_command", want)
+		}
+	}
+}
+
+func TestRobotLabelHealthContract(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	writeBeads(t, env, `{"id":"API-1","title":"API root","status":"open","priority":1,"issue_type":"task","labels":["api"]}
+{"id":"WEB-1","title":"WEB blocked by API","status":"open","priority":2,"issue_type":"task","labels":["web"],"dependencies":[{"issue_id":"WEB-1","depends_on_id":"API-1","type":"blocks"}]}`)
+
+	var payload struct {
+		DataHash       string         `json:"data_hash"`
+		AnalysisConfig map[string]any `json:"analysis_config"`
+		Results        struct {
+			TotalLabels int `json:"total_labels"`
+			Summaries   []struct {
+				Label string `json:"label"`
+			} `json:"summaries"`
+		} `json:"results"`
+	}
+	runRobotJSON(t, bv, env, "--robot-label-health", &payload)
+
+	if payload.DataHash == "" {
+		t.Fatalf("label-health missing data_hash")
+	}
+	if len(payload.AnalysisConfig) == 0 {
+		t.Fatalf("label-health missing analysis_config")
+	}
+	if payload.Results.TotalLabels <= 0 {
+		t.Fatalf("label-health expected total_labels > 0, got %d", payload.Results.TotalLabels)
+	}
+	found := false
+	for _, s := range payload.Results.Summaries {
+		if s.Label == "api" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("label-health expected a summary for label 'api'")
+	}
+}
+
+func TestRobotLabelFlowContract(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	// Cross-label dependency: WEB depends on API => flow from api -> web.
+	writeBeads(t, env, `{"id":"API-1","title":"API root","status":"open","priority":1,"issue_type":"task","labels":["api"]}
+{"id":"WEB-1","title":"WEB blocked by API","status":"open","priority":2,"issue_type":"task","labels":["web"],"dependencies":[{"issue_id":"WEB-1","depends_on_id":"API-1","type":"blocks"}]}`)
+
+	var payload struct {
+		DataHash string `json:"data_hash"`
+		Flow     struct {
+			Labels        []string `json:"labels"`
+			Dependencies  []any    `json:"dependencies"`
+			Bottlenecks   []string `json:"bottleneck_labels"`
+			TotalCrossDep int      `json:"total_cross_label_deps"`
+		} `json:"flow"`
+	}
+	runRobotJSON(t, bv, env, "--robot-label-flow", &payload)
+
+	if payload.DataHash == "" {
+		t.Fatalf("label-flow missing data_hash")
+	}
+	if len(payload.Flow.Labels) < 2 {
+		t.Fatalf("label-flow expected >=2 labels, got %d", len(payload.Flow.Labels))
+	}
+	if len(payload.Flow.Dependencies) == 0 && payload.Flow.TotalCrossDep == 0 {
+		t.Fatalf("label-flow expected at least one cross-label dependency")
+	}
+	// Bottlenecks can be empty on small graphs; just ensure field exists by reaching here.
+	_ = payload.Flow.Bottlenecks
+}
+
+func TestRobotLabelAttentionContract(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	writeBeads(t, env, `{"id":"API-1","title":"API root","status":"open","priority":1,"issue_type":"task","labels":["api"]}
+{"id":"WEB-1","title":"WEB blocked by API","status":"open","priority":2,"issue_type":"task","labels":["web"],"dependencies":[{"issue_id":"WEB-1","depends_on_id":"API-1","type":"blocks"}]}`)
+
+	var payload struct {
+		DataHash    string `json:"data_hash"`
+		Limit       int    `json:"limit"`
+		TotalLabels int    `json:"total_labels"`
+		Labels      []struct {
+			Rank  int    `json:"rank"`
+			Label string `json:"label"`
+		} `json:"labels"`
+	}
+	runRobotJSON(t, bv, env, "--robot-label-attention", &payload)
+
+	if payload.DataHash == "" {
+		t.Fatalf("label-attention missing data_hash")
+	}
+	if payload.TotalLabels <= 0 {
+		t.Fatalf("label-attention expected total_labels > 0, got %d", payload.TotalLabels)
+	}
+	if payload.Limit <= 0 {
+		t.Fatalf("label-attention expected limit > 0, got %d", payload.Limit)
+	}
+	if len(payload.Labels) == 0 {
+		t.Fatalf("label-attention expected at least one label score")
+	}
+	if payload.Labels[0].Rank == 0 || payload.Labels[0].Label == "" {
+		t.Fatalf("label-attention missing rank/label in first entry: %+v", payload.Labels[0])
+	}
+}
+
+func TestRobotNextContractNoActionable(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	writeBeads(t, env, `{"id":"X","title":"Done","status":"closed","priority":1,"issue_type":"task"}`)
+
+	var payload struct {
+		GeneratedAt string `json:"generated_at"`
+		DataHash    string `json:"data_hash"`
+		Message     string `json:"message"`
+	}
+	runRobotJSON(t, bv, env, "--robot-next", &payload)
+
+	if payload.GeneratedAt == "" {
+		t.Fatalf("robot-next missing generated_at")
+	}
+	if payload.DataHash == "" {
+		t.Fatalf("robot-next missing data_hash")
+	}
+	if payload.Message == "" {
+		t.Fatalf("robot-next missing message")
+	}
+}
+
+func TestRobotNextContractActionable(t *testing.T) {
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	// A is actionable and should be picked; B is blocked by A.
+	writeBeads(t, env, `{"id":"A","title":"Unblocker","status":"open","priority":1,"issue_type":"task"}
+{"id":"B","title":"Blocked","status":"open","priority":2,"issue_type":"task","dependencies":[{"issue_id":"B","depends_on_id":"A","type":"blocks"}]}`)
+
+	var payload struct {
+		GeneratedAt string   `json:"generated_at"`
+		DataHash    string   `json:"data_hash"`
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Score       float64  `json:"score"`
+		Reasons     []string `json:"reasons"`
+		Unblocks    int      `json:"unblocks"`
+		ClaimCmd    string   `json:"claim_command"`
+		ShowCmd     string   `json:"show_command"`
+	}
+	runRobotJSON(t, bv, env, "--robot-next", &payload)
+
+	if payload.GeneratedAt == "" {
+		t.Fatalf("robot-next missing generated_at")
+	}
+	if payload.DataHash == "" {
+		t.Fatalf("robot-next missing data_hash")
+	}
+	if payload.ID != "A" {
+		t.Fatalf("expected robot-next to pick A, got %q", payload.ID)
+	}
+	if payload.Title == "" {
+		t.Fatalf("robot-next missing title")
+	}
+	if payload.Score == 0 {
+		t.Fatalf("robot-next missing score")
+	}
+	if len(payload.Reasons) == 0 {
+		t.Fatalf("robot-next missing reasons")
+	}
+	if payload.ClaimCmd != "bd update A --status=in_progress" {
+		t.Fatalf("unexpected claim_command: %q", payload.ClaimCmd)
+	}
+	if payload.ShowCmd != "bd show A" {
+		t.Fatalf("unexpected show_command: %q", payload.ShowCmd)
+	}
+}
+
 func TestRobotUsageHintsPresent(t *testing.T) {
 	bv := buildBvBinary(t)
 	env := t.TempDir()
