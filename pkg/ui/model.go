@@ -50,6 +50,7 @@ const (
 	focusActionable
 	focusRecipePicker
 	focusRepoPicker
+	focusProjectManager
 	focusHelp
 	focusQuitConfirm
 	focusTimeTravelInput
@@ -298,6 +299,10 @@ type Model struct {
 	showRepoPicker bool
 	repoPicker     RepoPickerModel
 
+	// Project manager (multi-project mode)
+	showProjectManager bool
+	projectManager     ProjectManagerModel
+
 	// Time-travel mode
 	timeTravelMode   bool
 	timeTravelDiff   *analysis.SnapshotDiff
@@ -319,6 +324,9 @@ type Model struct {
 	availableRepos   []string        // List of repo prefixes available
 	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
 	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
+
+	// Multi-project CRUD context (maps repo prefix to beads file path)
+	projectPaths map[string]string // prefix -> beads file path for CRUD operations
 
 	// Alerts panel (bv-168)
 	alerts          []drift.Alert
@@ -418,6 +426,7 @@ type WorkspaceInfo struct {
 	FailedCount  int
 	TotalIssues  int
 	RepoPrefixes []string
+	ProjectPaths map[string]string // prefix -> beads file path for CRUD operations
 }
 
 func (m *Model) updateSemanticIDs(items []list.Item) {
@@ -1274,6 +1283,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle project manager overlay (multi-project mode) before global keys
+		if m.showProjectManager {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m = m.handleProjectManagerKeys(msg)
+			return m, nil
+		}
+
 		// Handle recipe picker overlay before global keys (esc/q/etc.)
 		if m.showRecipePicker {
 			if msg.String() == "ctrl+c" {
@@ -1696,6 +1714,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focused = focusLabelPicker
 				return m, nil
 
+			case "P":
+				// Open project manager (multi-project mode)
+				if !m.workspaceMode {
+					m.statusMsg = "Project manager available only in multi-project mode"
+					m.statusIsError = false
+					return m, nil
+				}
+				m.showProjectManager = !m.showProjectManager
+				if m.showProjectManager {
+					m.projectManager = NewProjectManagerModel(m.theme)
+					// Build project entries from current state
+					entries := m.buildProjectEntries()
+					m.projectManager.SetProjects(entries)
+					m.projectManager.SetSize(m.width, m.height-1)
+					m.focused = focusProjectManager
+				} else {
+					m.focused = focusList
+				}
+				return m, nil
+
 			}
 
 			// Focus-specific key handling
@@ -1705,6 +1743,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case focusRepoPicker:
 				m = m.handleRepoPickerKeys(msg)
+
+			case focusProjectManager:
+				m = m.handleProjectManagerKeys(msg)
 
 			case focusLabelPicker:
 				m = m.handleLabelPickerKeys(msg)
@@ -2163,6 +2204,79 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 	return m
 }
 
+// handleProjectManagerKeys handles keyboard input when project manager is focused
+func (m Model) handleProjectManagerKeys(msg tea.KeyMsg) Model {
+	if m.projectManager.IsAddMode() {
+		// In add mode, handle text input
+		switch msg.String() {
+		case "esc":
+			m.projectManager.ExitAddMode()
+		case "enter":
+			path := m.projectManager.GetInputValue()
+			if path == "" {
+				m.projectManager.SetError("Path cannot be empty")
+				return m
+			}
+			// TODO: Validate path and add project
+			// For now, just show message since full reload requires main.go changes
+			m.projectManager.ExitAddMode()
+			m.statusMsg = "Adding projects dynamically is not yet implemented"
+			m.statusIsError = false
+		default:
+			m.projectManager.UpdateInput(msg)
+		}
+		return m
+	}
+
+	switch msg.String() {
+	case "j", "down":
+		m.projectManager.MoveDown()
+	case "k", "up":
+		m.projectManager.MoveUp()
+	case " ", "space":
+		m.projectManager.ToggleActive()
+	case "a":
+		m.projectManager.EnterAddMode()
+	case "d":
+		if removed := m.projectManager.RemoveSelected(); removed != nil {
+			m.statusMsg = fmt.Sprintf("Removed project: %s", removed.Name)
+			m.statusIsError = false
+		}
+	case "esc", "q":
+		m.showProjectManager = false
+		m.focused = focusList
+	case "enter":
+		// Apply project selection as repo filter
+		active := m.projectManager.ActiveProjects()
+		if len(active) == 0 || len(active) == len(m.projectManager.AllProjects()) {
+			m.activeRepos = nil
+			m.statusMsg = "Project filter: all projects"
+		} else {
+			m.activeRepos = make(map[string]bool)
+			for _, p := range active {
+				m.activeRepos[p.Prefix] = true
+			}
+			names := make([]string, 0, len(active))
+			for _, p := range active {
+				names = append(names, p.Name)
+			}
+			m.statusMsg = fmt.Sprintf("Project filter: %s", strings.Join(names, ", "))
+		}
+		m.statusIsError = false
+
+		// Apply filter to views
+		if m.activeRecipe != nil {
+			m.applyRecipe(m.activeRecipe)
+		} else {
+			m.applyFilter()
+		}
+
+		m.showProjectManager = false
+		m.focused = focusList
+	}
+	return m
+}
+
 // handleLabelPickerKeys handles keyboard input when label picker is focused (bv-126)
 func (m Model) handleLabelPickerKeys(msg tea.KeyMsg) Model {
 	switch msg.String() {
@@ -2406,6 +2520,8 @@ func (m Model) View() string {
 		body = m.recipePicker.View()
 	} else if m.showRepoPicker {
 		body = m.repoPicker.View()
+	} else if m.showProjectManager {
+		body = m.projectManager.View()
 	} else if m.showLabelPicker {
 		body = m.labelPicker.View()
 	} else if m.showHelp {
@@ -3567,6 +3683,12 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
+	} else if m.showProjectManager {
+		if m.projectManager.IsAddMode() {
+			keyHints = append(keyHints, "type path", keyStyle.Render("⏎")+" add", keyStyle.Render("esc")+" cancel")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" add", keyStyle.Render("d")+" remove", keyStyle.Render("⏎")+" apply")
+		}
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.focused == focusInsights {
@@ -4307,6 +4429,7 @@ func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 	m.workspaceMode = info.Enabled
 	m.availableRepos = normalizeRepoPrefixes(info.RepoPrefixes)
 	m.activeRepos = nil // nil means all repos are active
+	m.projectPaths = info.ProjectPaths
 
 	if info.RepoCount > 0 {
 		if info.FailedCount > 0 {
@@ -4328,6 +4451,66 @@ func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 // IsWorkspaceMode returns whether workspace mode is active
 func (m Model) IsWorkspaceMode() bool {
 	return m.workspaceMode
+}
+
+// GetBeadsPathForIssue returns the beads file path for the given issue ID.
+// In workspace mode, this looks up the project based on the issue's prefix.
+// Returns empty string if no matching project is found.
+func (m *Model) GetBeadsPathForIssue(issueID string) string {
+	if !m.workspaceMode || m.projectPaths == nil {
+		return m.beadsPath
+	}
+
+	// Find matching prefix
+	for prefix, path := range m.projectPaths {
+		if strings.HasPrefix(strings.ToLower(issueID), strings.ToLower(prefix)) {
+			return path
+		}
+	}
+	return ""
+}
+
+// GetProjectDirForIssue returns the project directory for the given issue ID.
+// This is the parent of the parent of the beads file path (.beads/issues.jsonl -> project).
+func (m *Model) GetProjectDirForIssue(issueID string) string {
+	beadsPath := m.GetBeadsPathForIssue(issueID)
+	if beadsPath == "" {
+		return ""
+	}
+	// .beads/issues.jsonl -> .beads -> project
+	return filepath.Dir(filepath.Dir(beadsPath))
+}
+
+// buildProjectEntries creates ProjectEntry slice from current workspace state.
+func (m *Model) buildProjectEntries() []ProjectEntry {
+	if m.projectPaths == nil {
+		return nil
+	}
+
+	// Count issues per prefix
+	issueCounts := make(map[string]int)
+	for _, issue := range m.issues {
+		for prefix := range m.projectPaths {
+			if strings.HasPrefix(strings.ToLower(issue.ID), strings.ToLower(prefix)) {
+				issueCounts[prefix]++
+				break
+			}
+		}
+	}
+
+	var entries []ProjectEntry
+	for prefix, beadsPath := range m.projectPaths {
+		projectDir := filepath.Dir(filepath.Dir(beadsPath))
+		isActive := m.activeRepos == nil || m.activeRepos[prefix]
+		entries = append(entries, ProjectEntry{
+			Name:       filepath.Base(projectDir),
+			Path:       projectDir,
+			Prefix:     prefix,
+			IssueCount: issueCounts[prefix],
+			IsActive:   isActive,
+		})
+	}
+	return entries
 }
 
 // enterHistoryView loads correlation data and shows the history view

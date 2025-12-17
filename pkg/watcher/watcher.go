@@ -325,3 +325,139 @@ func (w *Watcher) notifyChange() {
 	default:
 	}
 }
+
+// PathChange represents a change event from a specific file.
+type PathChange struct {
+	Path string // The path that changed
+}
+
+// MultiWatcher monitors multiple files simultaneously and coalesces their change events.
+type MultiWatcher struct {
+	watchers map[string]*Watcher // path -> watcher
+	changeCh chan PathChange     // sends path that changed
+	mu       sync.RWMutex
+	started  bool
+}
+
+// NewMultiWatcher creates a new watcher that can monitor multiple files.
+func NewMultiWatcher() *MultiWatcher {
+	return &MultiWatcher{
+		watchers: make(map[string]*Watcher),
+		changeCh: make(chan PathChange, 10),
+	}
+}
+
+// AddPath adds a file path to be watched.
+// If the path is already being watched, this is a no-op.
+// Returns an error if the watcher cannot be created.
+func (mw *MultiWatcher) AddPath(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	if _, exists := mw.watchers[absPath]; exists {
+		return nil // already watching
+	}
+
+	w, err := NewWatcher(absPath, WithDebounceDuration(200*time.Millisecond))
+	if err != nil {
+		return err
+	}
+
+	// Forward changes to combined channel
+	watchedPath := absPath
+	w.onChange = func() {
+		// Non-blocking send
+		select {
+		case mw.changeCh <- PathChange{Path: watchedPath}:
+		default:
+		}
+	}
+
+	if mw.started {
+		if err := w.Start(); err != nil {
+			return err
+		}
+	}
+
+	mw.watchers[absPath] = w
+	return nil
+}
+
+// RemovePath stops watching a file path.
+func (mw *MultiWatcher) RemovePath(path string) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	if w, exists := mw.watchers[absPath]; exists {
+		w.Stop()
+		delete(mw.watchers, absPath)
+	}
+}
+
+// Start begins watching all registered paths.
+func (mw *MultiWatcher) Start() error {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	if mw.started {
+		return nil
+	}
+
+	for path, w := range mw.watchers {
+		if err := w.Start(); err != nil {
+			// Log but continue - don't let one failure break others
+			// The error will surface when trying to reload that specific project
+			_ = path // unused, just for documentation
+		}
+	}
+
+	mw.started = true
+	return nil
+}
+
+// Stop stops watching all paths.
+func (mw *MultiWatcher) Stop() {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+
+	for _, w := range mw.watchers {
+		w.Stop()
+	}
+	mw.watchers = make(map[string]*Watcher)
+	mw.started = false
+}
+
+// Changed returns a channel that receives when any watched file changes.
+// The PathChange includes the path that changed.
+func (mw *MultiWatcher) Changed() <-chan PathChange {
+	return mw.changeCh
+}
+
+// Paths returns all currently watched paths.
+func (mw *MultiWatcher) Paths() []string {
+	mw.mu.RLock()
+	defer mw.mu.RUnlock()
+
+	paths := make([]string, 0, len(mw.watchers))
+	for path := range mw.watchers {
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+// IsEmpty returns true if no paths are being watched.
+func (mw *MultiWatcher) IsEmpty() bool {
+	mw.mu.RLock()
+	defer mw.mu.RUnlock()
+	return len(mw.watchers) == 0
+}

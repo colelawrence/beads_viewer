@@ -21,6 +21,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/baseline"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/config"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
@@ -36,6 +37,18 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// stringSliceFlag is a custom flag type for repeated string flags (e.g., --project).
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
 
 func main() {
 	help := flag.Bool("help", false, "Show help")
@@ -98,6 +111,11 @@ func main() {
 	noHooks := flag.Bool("no-hooks", false, "Skip running hooks during export")
 	workspaceConfig := flag.String("workspace", "", "Load issues from workspace config file (.bv/workspace.yaml)")
 	repoFilter := flag.String("repo", "", "Filter issues by repository prefix (e.g., 'api-' or 'api')")
+	// Multi-project flags
+	var projectPaths stringSliceFlag
+	flag.Var(&projectPaths, "project", "Path to project directory (can be repeated, e.g., --project ~/code/api --project ~/code/web)")
+	saveProjects := flag.Bool("save-projects", false, "Save current project list to ~/.config/bv/projects.yaml")
+	clearProjects := flag.Bool("clear-projects", false, "Clear saved project list")
 	saveBaseline := flag.String("save-baseline", "", "Save current metrics as baseline with optional description")
 	baselineInfo := flag.Bool("baseline-info", false, "Show information about the current baseline")
 	checkDrift := flag.Bool("check-drift", false, "Check for drift from baseline (exit codes: 0=OK, 1=critical, 2=warning)")
@@ -817,18 +835,46 @@ func main() {
 		}
 	}
 
+	// Handle --clear-projects flag
+	if *clearProjects {
+		if err := config.ClearProjects(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error clearing projects: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Saved project list cleared.")
+		os.Exit(0)
+	}
+
+	// Load saved projects if no --project flags provided
+	if len(projectPaths) == 0 && *workspaceConfig == "" {
+		savedConfig, err := config.LoadProjects()
+		if err != nil {
+			if !envRobot {
+				fmt.Fprintf(os.Stderr, "Warning: failed to load saved projects: %v\n", err)
+			}
+		} else if len(savedConfig.Projects) > 0 {
+			projectPaths = savedConfig.EnabledPaths()
+		}
+	}
+
 	// Load issues from current directory or workspace (with timing for profile)
 	loadStart := time.Now()
 	var issues []model.Issue
 	var beadsPath string
 	var workspaceInfo *workspace.LoadSummary
-	var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
+	var asOfResolved string                   // Resolved commit SHA when using --as-of (for robot output metadata)
+	var projectConfigs []workspace.RepoConfig // Track configs for CRUD context
+	var projectPathsMap map[string]string     // prefix -> beads file path for CRUD
+	_ = projectConfigs                        // Will be used for project manager UI
 
 	if *asOf != "" {
 		// Time-travel mode: load historical issues from git
-		// Note: --as-of takes precedence over --workspace (can't combine historical + multi-repo)
+		// Note: --as-of takes precedence over --workspace and --project (can't combine historical + multi-repo)
 		if *workspaceConfig != "" {
 			fmt.Fprintf(os.Stderr, "Warning: --workspace is ignored when --as-of is specified\n")
+		}
+		if len(projectPaths) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: --project is ignored when --as-of is specified\n")
 		}
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -852,6 +898,59 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Loaded %d issues from %s\n", len(issues), *asOf)
 			}
 		}
+	} else if len(projectPaths) > 0 {
+		// Load from multiple projects via --project flags
+		wsConfig, err := buildConfigFromPaths(projectPaths)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error building project config: %v\n", err)
+			os.Exit(1)
+		}
+		projectConfigs = wsConfig.Repos
+
+		// Build project paths map for CRUD context
+		projectPathsMap = make(map[string]string)
+		for _, repo := range projectConfigs {
+			beadsDir := filepath.Join(repo.Path, repo.GetBeadsPath())
+			jsonlPath, err := loader.FindJSONLPath(beadsDir)
+			if err == nil {
+				projectPathsMap[repo.GetPrefix()] = jsonlPath
+			}
+		}
+
+		// Use a placeholder root since paths are absolute
+		aggLoader := workspace.NewAggregateLoader(wsConfig, "")
+		loadedIssues, results, err := aggLoader.LoadAll(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading projects: %v\n", err)
+			os.Exit(1)
+		}
+		issues = loadedIssues
+		summary := workspace.Summarize(results)
+		workspaceInfo = &summary
+
+		// Print loading summary
+		if summary.FailedRepos > 0 && !envRobot {
+			fmt.Fprintf(os.Stderr, "Warning: %d projects failed to load\n", summary.FailedRepos)
+			for _, name := range summary.FailedRepoNames {
+				fmt.Fprintf(os.Stderr, "  - %s\n", name)
+			}
+		}
+
+		// Handle --save-projects flag
+		if *saveProjects {
+			projConfig := &config.ProjectsConfig{}
+			for _, p := range projectPaths {
+				projConfig.AddProject(p)
+			}
+			if err := config.SaveProjects(projConfig); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving projects: %v\n", err)
+			} else if !envRobot {
+				fmt.Fprintf(os.Stderr, "Saved %d projects to %s\n", len(projectPaths), config.ProjectsConfigPath())
+			}
+		}
+
+		// No single beadsPath in multi-project mode
+		beadsPath = ""
 	} else if *workspaceConfig != "" {
 		// Load from workspace configuration
 		loadedIssues, results, err := workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
@@ -3220,7 +3319,7 @@ func main() {
 	m := ui.NewModel(issues, activeRecipe, beadsPath)
 	defer m.Stop() // Clean up file watcher
 
-	// Enable workspace mode if loading from workspace config
+	// Enable workspace mode if loading from workspace config or multi-project
 	if workspaceInfo != nil {
 		m.EnableWorkspaceMode(ui.WorkspaceInfo{
 			Enabled:      true,
@@ -3228,6 +3327,7 @@ func main() {
 			FailedCount:  workspaceInfo.FailedRepos,
 			TotalIssues:  workspaceInfo.TotalIssues,
 			RepoPrefixes: workspaceInfo.RepoPrefixes,
+			ProjectPaths: projectPathsMap,
 		})
 	}
 
@@ -5145,4 +5245,53 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Commits:     commits,
 	}, nil
+}
+
+// buildConfigFromPaths creates a synthetic workspace.Config from a list of project paths.
+// Each path becomes a repo with an auto-generated prefix based on directory name.
+func buildConfigFromPaths(paths []string) (*workspace.Config, error) {
+	wsConfig := &workspace.Config{
+		Repos: make([]workspace.RepoConfig, 0, len(paths)),
+	}
+
+	seen := make(map[string]int)
+	for _, p := range paths {
+		absPath, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid path %s: %w", p, err)
+		}
+
+		// Expand ~ to home directory
+		if strings.HasPrefix(absPath, "~") {
+			home, _ := os.UserHomeDir()
+			absPath = filepath.Join(home, absPath[1:])
+		}
+
+		// Verify path exists and has .beads directory
+		beadsDir := filepath.Join(absPath, ".beads")
+		if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+			return nil, fmt.Errorf("no .beads directory found in %s", absPath)
+		}
+
+		// Generate unique name/prefix from directory name
+		baseName := filepath.Base(absPath)
+		name := baseName
+		if count, exists := seen[baseName]; exists {
+			name = fmt.Sprintf("%s_%d", baseName, count+1)
+			seen[baseName] = count + 1
+		} else {
+			seen[baseName] = 1
+		}
+
+		wsConfig.Repos = append(wsConfig.Repos, workspace.RepoConfig{
+			Name: name,
+			Path: absPath,
+		})
+	}
+
+	if err := wsConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid project config: %w", err)
+	}
+
+	return wsConfig, nil
 }
