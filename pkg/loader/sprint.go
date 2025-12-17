@@ -118,8 +118,13 @@ func SaveSprintsToFile(path string, sprints []model.Sprint) error {
 	}
 
 	tmpName := tmp.Name()
+	// Track whether we've closed the file to avoid double-close
+	closed := false
 	cleanup := func() {
-		_ = tmp.Close()
+		if !closed {
+			_ = tmp.Close()
+			closed = true
+		}
 		_ = os.Remove(tmpName)
 	}
 
@@ -134,9 +139,11 @@ func SaveSprintsToFile(path string, sprints []model.Sprint) error {
 		cleanup()
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
+	closed = true
 
 	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
+		// File is already closed, just remove it
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
