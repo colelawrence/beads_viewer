@@ -406,8 +406,8 @@ func TestRobotTriageBlockersToClear(t *testing.T) {
 		DataHash string `json:"data_hash"`
 		Triage   struct {
 			BlockersToClear []struct {
-				ID       string `json:"id"`
-				Unblocks int    `json:"unblocks"`
+				ID           string `json:"id"`
+				UnblocksCount int    `json:"unblocks_count"`
 			} `json:"blockers_to_clear"`
 		} `json:"triage"`
 	}
@@ -422,13 +422,13 @@ func TestRobotTriageBlockersToClear(t *testing.T) {
 	// Find the blocker
 	found := false
 	for _, b := range payload.Triage.BlockersToClear {
-		if b.ID == "BLOCKER" && b.Unblocks >= 2 {
+		if b.ID == "BLOCKER" && b.UnblocksCount >= 2 {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected BLOCKER in blockers_to_clear with unblocks >= 2: %+v",
+		t.Fatalf("expected BLOCKER in blockers_to_clear with unblocks_count >= 2: %+v",
 			payload.Triage.BlockersToClear)
 	}
 }
